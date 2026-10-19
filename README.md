@@ -44,5 +44,5 @@ si possible, sa mesure.
 ## Workflows
 
 - `Test Bot` : déclenchement manuel, prévoit sur le tournoi de test `bot-testing-area`.
-- `Forecast on new AI tournament questions` : toutes les 20 minutes, tournoi d'automne + MiniBench,
+- `Forecast on new AI tournament questions` : chaque heure (phase à budget borné ; 20 minutes ensuite), tournoi d'automne + MiniBench,
   en sautant les questions déjà prévues.
