@@ -2,8 +2,10 @@ name: Forecast on new AI tournament questions
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "17 * * * *" # chaque heure pendant la phase a budget borne (10 $) : une question qui echoue au parseur serait retentee a chaque run. Repasser a 20 min quand les credits sont confortables.
+  # Cron en pause (19/10) : le reglement exige le formulaire de participation avant toute
+  # prevision en tournoi. Reactiver (decommenter) des que le sponsor a rempli le formulaire.
+  # schedule:
+  #   - cron: "17 * * * *" # chaque heure pendant la phase a budget borne (10 $) : une question qui echoue au parseur serait retentee a chaque run. Repasser a 20 min quand les credits sont confortables.
 
 # Add concurrency group to prevent parallel runs
 concurrency:
