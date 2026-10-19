@@ -704,9 +704,13 @@ if __name__ == "__main__":
     publish_to_metaculus = True
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
-    # Configure the bot. The `llms=` block below is commented out to use
-    # whichever default models forecasting-tools picks based on your env vars;
-    # uncomment and edit to pin specific models.
+    # Modèles épinglés (2026-10-19). Le choix par défaut de forecasting-tools pointait sur
+    # `openai/gpt-4o-search-preview`, qui n'a plus d'endpoint sur OpenRouter (404 au premier
+    # test). Tout passe par OpenRouter (une seule clé) :
+    #   - researcher : perplexity/sonar, recherche web ancrée dans des sources, bon marché ;
+    #   - default    : gpt-5-mini, raisonnement de la prévision ;
+    #   - summarizer / parser : gpt-4.1-mini, tâches mécaniques.
+    # Toute évolution de ce choix se fait une variable à la fois, avec sa mesure.
     template_bot = FallTemplateBot2026(
         research_reports_per_question=1,
         predictions_per_research_report=5,
@@ -715,17 +719,22 @@ if __name__ == "__main__":
         folder_to_save_reports_to=None,
         skip_previously_forecasted_questions=True,
         extra_metadata_in_explanation=True,
-        # llms={
-        #     "default": GeneralLlm(
-        #         model="openrouter/openai/gpt-4o",
-        #         temperature=0.3,
-        #         timeout=40,
-        #         allowed_tries=2,
-        #     ),
-        #     "summarizer": "openai/gpt-4o-mini",
-        #     "researcher": "asknews/news-summaries",
-        #     "parser": "openai/gpt-4o-mini",
-        # },
+        llms={
+            "default": GeneralLlm(
+                model="openrouter/openai/gpt-5-mini",
+                temperature=0.3,
+                timeout=90,
+                allowed_tries=2,
+            ),
+            "summarizer": "openrouter/openai/gpt-4.1-mini",
+            "researcher": GeneralLlm(
+                model="openrouter/perplexity/sonar",
+                temperature=0.1,
+                timeout=90,
+                allowed_tries=2,
+            ),
+            "parser": "openrouter/openai/gpt-4.1-mini",
+        },
     )
 
     # Per-mode tournament URL shown in the summary banner footer. These

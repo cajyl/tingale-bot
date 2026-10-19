@@ -29,6 +29,9 @@ Différences avec le gabarit, à ce stade :
 2. Garde-fou : sans jeton ni clé de modèle, le workflow s'arrête avant toute installation.
 3. Cache des dépendances entre deux exécutions.
 4. README remplacé par celui-ci.
+5. Modèles épinglés (19/10/2026), car le choix par défaut (`openai/gpt-4o-search-preview`) n'a
+   plus d'endpoint sur OpenRouter : recherche web `perplexity/sonar`, raisonnement `gpt-5-mini`,
+   résumé et analyse `gpt-4.1-mini`. Tout via OpenRouter, une seule clé.
 
 Les améliorations du modèle de prévision viendront ensuite, une à une, chacune avec sa raison et,
 si possible, sa mesure.
