@@ -3,7 +3,7 @@ name: Forecast on new AI tournament questions
 on:
   workflow_dispatch:
   schedule:
-    - cron: "7,27,47 * * * *" # every 20 min, offset off the hour. Make sure to skip already-forecasted questions!
+    - cron: "7,27,47 * * * *" # toutes les 20 min (depot public : minutes gratuites). Les questions deja prevues sont sautees.
 
 # Add concurrency group to prevent parallel runs
 concurrency:
@@ -19,25 +19,44 @@ jobs:
       # setup repository with all necessary dependencies - keep as is
       - name: Check out repository
         uses: actions/checkout@v4
+      # Garde-fou : sans jeton, on s'arrête tout de suite (pas d'installation, pas d'échec bruyant).
+      - name: Verifier les secrets
+        id: guard
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          if [ -z "$METACULUS_TOKEN" ]; then
+            echo "METACULUS_TOKEN manquant : rien a faire."; echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "$OPENROUTER_API_KEY$ANTHROPIC_API_KEY$OPENAI_API_KEY" ]; then
+            echo "Aucune cle de modele (OPENROUTER_API_KEY, ANTHROPIC_API_KEY ou OPENAI_API_KEY) : rien a faire."; echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-python@v5
+        if: steps.guard.outputs.skip != 'true'
         with:
           python-version: "3.11"
       - name: Install poetry
+        if: steps.guard.outputs.skip != 'true'
         uses: snok/install-poetry@v1
         with:
           virtualenvs-create: true
           virtualenvs-in-project: true
           installer-parallel: true
-      # Adding the below will make the workflow faster, but will mean you don't automatically get updates from forecasting-tools and other packages
-      # - name: Load cached venv
-      #   id: cached-poetry-dependencies
-      #   uses: actions/cache@v4
-      #   with:
-      #     path: .venv
-      #     key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
+      - name: Cache des dependances
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-py311-${{ hashFiles('poetry.lock') }}
       - name: Install dependencies
+        if: steps.guard.outputs.skip != 'true'
         run: poetry install --no-interaction --no-root
       - name: Run bot
+        if: steps.guard.outputs.skip != 'true'
         run: |
           poetry run python main.py
         # this reads the environment variables from the github repository.

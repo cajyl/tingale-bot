@@ -26,7 +26,9 @@ Différences avec le gabarit, à ce stade :
 
 1. Workflow « Metaculus Cup » retiré : les bots n'y sont pas éligibles aux prix, il ne ferait que
    consommer des crédits.
-2. README remplacé par celui-ci.
+2. Garde-fou : sans jeton ni clé de modèle, le workflow s'arrête avant toute installation.
+3. Cache des dépendances entre deux exécutions.
+4. README remplacé par celui-ci.
 
 Les améliorations du modèle de prévision viendront ensuite, une à une, chacune avec sa raison et,
 si possible, sa mesure.
