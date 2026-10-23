@@ -46,3 +46,6 @@ si possible, sa mesure.
 - `Test Bot` : déclenchement manuel, prévoit sur le tournoi de test `bot-testing-area`.
 - `Forecast on new AI tournament questions` : chaque heure (phase à budget borné ; 20 minutes ensuite), tournoi d'automne + MiniBench,
   en sautant les questions déjà prévues.
+- `Score du bot (lecture seule)` : manuel et le vendredi matin ; `score.py` lit via l'API (jeton) le
+  nombre de questions prévues par le bot et son rang au classement, sans rien publier. Résultat
+  dans le journal du job et dans le résumé du run.
