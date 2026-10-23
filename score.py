@@ -16,17 +16,23 @@ si cette variable existe. Dépendances : bibliothèque standard uniquement.
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 BASE = "https://www.metaculus.com/api"
+PAUSE = 1.0  # secondes entre deux appels
 DEFAULT_TOURNAMENTS = "33121:Fall FutureEval 2026,minibench:MiniBench"
 STATUSES = ["open", "closed", "resolved", "upcoming"]
 
 
 def api(path, params=None, token=None):
-    """GET sur l'API ; les listes de paramètres sont répétées (statuses=open&statuses=...)."""
+    """GET sur l'API ; les listes de paramètres sont répétées (statuses=open&statuses=...).
+
+    L'API limite le débit (HTTP 429 observé au premier essai, 23/10) : pause entre deux appels
+    et reprise avec attente croissante.
+    """
     query = urllib.parse.urlencode(params or {}, doseq=True)
     url = f"{BASE}{path}" + (f"?{query}" if query else "")
     req = urllib.request.Request(url, headers={
@@ -34,8 +40,15 @@ def api(path, params=None, token=None):
         "User-Agent": "tingale-bot/score (github.com/cajyl/tingale-bot)",
         "Accept": "application/json",
     })
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode("utf-8"))
+    for attempt, wait in enumerate((0, 10, 30, 60)):
+        time.sleep(wait or PAUSE)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code != 429 or attempt == 3:
+                raise
+            print(f"  (429 sur {path}, nouvel essai dans {(10, 30, 60)[attempt]} s)")
 
 
 def count_posts(token, tournament, forecaster_id=None):
@@ -57,20 +70,41 @@ def count_posts(token, tournament, forecaster_id=None):
     return (total if total is not None else len(ids)), ids
 
 
+def project_id(token, tournament):
+    """Identifiant numérique du projet (un slug comme « minibench » doit être résolu)."""
+    if str(tournament).isdigit():
+        return int(tournament)
+    try:
+        data = api(f"/projects/tournaments/{tournament}/", token=token)
+        return int(data["id"])
+    except (urllib.error.HTTPError, KeyError, ValueError) as e:
+        print(f"  (projet {tournament} : {e})")
+        return None
+
+
 def leaderboard(token, tournament):
-    """Classement du tournoi. Plusieurs formes d'URL ont existé : on essaie dans l'ordre."""
-    for path, params in (
-        (f"/projects/{tournament}/leaderboard/", {}),
-        (f"/projects/{tournament}/", {}),
-    ):
+    """Classement du tournoi. L'URL n'est pas documentée : on essaie plusieurs formes, dans
+    l'ordre, et on consigne le code HTTP de chacune pour apprendre d'un passage à l'autre."""
+    pid = project_id(token, tournament)
+    candidates = [f"/projects/tournaments/{tournament}/leaderboard/"]
+    if pid:
+        candidates += [f"/leaderboards/project/{pid}/", f"/projects/{pid}/leaderboard/",
+                       f"/leaderboards/?project_id={pid}"]
+    for path in candidates:
         try:
-            data = api(path, params, token)
+            data = api(path, token=token)
         except urllib.error.HTTPError as e:
             print(f"  ({path} → HTTP {e.code})")
             continue
-        entries = data.get("entries") or data.get("leaderboard") or []
+        if isinstance(data, dict):
+            entries = data.get("entries") or data.get("leaderboard") or data.get("results") or []
+            score_type = data.get("score_type")
+        else:
+            entries, score_type = data, None
         if entries:
-            return data.get("score_type"), entries
+            print(f"  (classement lu sur {path} ; champs : {sorted(entries[0].keys())})")
+            return score_type, entries
+        print(f"  ({path} → vide ; clés : {sorted(data.keys()) if isinstance(data, dict) else type(data).__name__})")
     return None, []
 
 
@@ -88,9 +122,14 @@ def main():
     for item in spec.split(","):
         key, _, label = item.strip().partition(":")
         label = label or key
-        total, _ = count_posts(token, key)
-        mine, my_ids = count_posts(token, key, forecaster_id=my_id)
-        score_type, entries = leaderboard(token, key)
+        try:
+            total, _ = count_posts(token, key)
+            mine, my_ids = count_posts(token, key, forecaster_id=my_id)
+            score_type, entries = leaderboard(token, key)
+        except urllib.error.HTTPError as e:
+            print(f"{label} : erreur HTTP {e.code} sur {e.url}")
+            lines.append(f"| {label} | erreur HTTP {e.code} | | | |")
+            continue
         rank, score, n = "—", "—", len(entries)
         for i, e in enumerate(entries, 1):
             user = e.get("user") or {}
