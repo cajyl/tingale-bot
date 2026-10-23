@@ -86,10 +86,10 @@ def leaderboard(token, tournament):
     """Classement du tournoi. L'URL n'est pas documentée : on essaie plusieurs formes, dans
     l'ordre, et on consigne le code HTTP de chacune pour apprendre d'un passage à l'autre."""
     pid = project_id(token, tournament)
-    candidates = [f"/projects/tournaments/{tournament}/leaderboard/"]
-    if pid:
-        candidates += [f"/leaderboards/project/{pid}/", f"/projects/{pid}/leaderboard/",
-                       f"/leaderboards/?project_id={pid}"]
+    # Forme qui répond (vérifié le 23/10) : /leaderboards/project/<id>/ → {score_type, prize_pool,
+    # finalized, entries: [...]}. Les autres restent en secours si l'API change.
+    candidates = [f"/leaderboards/project/{pid}/", f"/projects/{pid}/leaderboard/"] if pid else []
+    candidates.append(f"/projects/tournaments/{tournament}/leaderboard/")
     for path in candidates:
         try:
             data = api(path, token=token)
@@ -99,10 +99,12 @@ def leaderboard(token, tournament):
         if isinstance(data, dict):
             entries = data.get("entries") or data.get("leaderboard") or data.get("results") or []
             score_type = data.get("score_type")
+            print(f"  (classement {path} : type {score_type}, dotation {data.get('prize_pool')}, "
+                  f"finalisé {data.get('finalized')}, {len(entries)} entrées)")
         else:
             entries, score_type = data, None
         if entries:
-            print(f"  (classement lu sur {path} ; champs : {sorted(entries[0].keys())})")
+            print(f"  (champs d'une entrée : {sorted(entries[0].keys())})")
             return score_type, entries
         print(f"  ({path} → vide ; clés : {sorted(data.keys()) if isinstance(data, dict) else type(data).__name__})")
     return None, []
@@ -131,9 +133,16 @@ def main():
             lines.append(f"| {label} | erreur HTTP {e.code} | | | |")
             continue
         rank, score, n = "—", "—", len(entries)
+
+        def who(e):
+            """Nom et id de l'entrée, quelle que soit la forme (user imbriqué ou champs à plat)."""
+            u = e.get("user") if isinstance(e.get("user"), dict) else {}
+            return (u.get("username") or e.get("username") or e.get("aggregation_method") or "?",
+                    u.get("id") or e.get("user_id"))
+
         for i, e in enumerate(entries, 1):
-            user = e.get("user") or {}
-            if user.get("id") == my_id or user.get("username") == my_name:
+            name, uid = who(e)
+            if uid == my_id or name == my_name:
                 rank = f"{e.get('rank', i)}/{n}"
                 s = e.get("score")
                 score = f"{s:.2f}" if isinstance(s, (int, float)) else str(s)
@@ -144,7 +153,7 @@ def main():
             print("  posts prévus : " + ", ".join(str(i) for i in sorted(my_ids)))
         if entries:
             print("  tête de classement : " + " ; ".join(
-                f"{(e.get('user') or {}).get('username', '?')} {e.get('score', '')}" for e in entries[:5]))
+                f"{who(e)[0]} {e.get('score', '')}" for e in entries[:5]))
         lines.append(f"| {label} | {total} | {mine} | {rank} | {score} |")
 
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
