@@ -96,6 +96,10 @@ def leaderboard(token, tournament):
         except urllib.error.HTTPError as e:
             print(f"  ({path} → HTTP {e.code})")
             continue
+        # /leaderboards/project/<id>/ renvoie une LISTE de classements (plusieurs barèmes possibles) :
+        # on prend le classement principal.
+        if isinstance(data, list) and data and isinstance(data[0], dict) and "entries" in data[0]:
+            data = next((b for b in data if b.get("is_primary_leaderboard")), data[0])
         if isinstance(data, dict):
             entries = data.get("entries") or data.get("leaderboard") or data.get("results") or []
             score_type = data.get("score_type")
@@ -106,7 +110,9 @@ def leaderboard(token, tournament):
         if entries:
             print(f"  (champs d'une entrée : {sorted(entries[0].keys())})")
             return score_type, entries
-        print(f"  ({path} → vide ; clés : {sorted(data.keys()) if isinstance(data, dict) else type(data).__name__})")
+        if isinstance(data, dict) and "entries" in data:
+            return score_type, []  # classement trouvé mais encore vide (aucune question résolue)
+        print(f"  ({path} → forme inattendue : {sorted(data.keys()) if isinstance(data, dict) else type(data).__name__})")
     return None, []
 
 
