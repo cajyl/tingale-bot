@@ -15,6 +15,7 @@ si cette variable existe. Dépendances : bibliothèque standard uniquement.
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -26,6 +27,14 @@ PAUSE = 1.0  # secondes entre deux appels
 DEFAULT_TOURNAMENTS = "33121:Fall FutureEval 2026,minibench:MiniBench"
 STATUSES = ["open", "closed", "resolved", "upcoming"]
 BOT_SINCE = os.environ.get("BOT_SINCE", "2026-10-20")  # entrée du bot en tournoi : mesure de couverture
+
+
+def clean(value, limit=90):
+    """Neutralise une chaîne venue de l'API avant de l'écrire dans le journal du job ou le résumé
+    Markdown : pas de retour à la ligne ni de caractère de contrôle (commandes de workflow
+    « ::… »), pas de barre verticale ni d'accent grave (tableau et code Markdown)."""
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", str(value))
+    return text.replace("::", ": :").replace("|", "/").replace("`", "'").strip()[:limit]
 
 
 def api(path, params=None, token=None):
@@ -67,14 +76,14 @@ def list_posts(token, tournament, statuses, forecaster_id=None):
             q = p.get("question") or {}
             kind = (f"question:{q.get('type')}" if q else "groupe" if p.get("group_of_questions")
                     else "conditionnelle" if p.get("conditional") else "carnet" if p.get("notebook") else "?")
-            open_dt = str(p.get("open_time") or q.get("open_time") or p.get("published_at") or "")
-            close_dt = str(q.get("actual_close_time") or p.get("scheduled_close_time") or q.get("scheduled_close_time") or "")
+            open_dt = clean(p.get("open_time") or q.get("open_time") or p.get("published_at") or "", 32)
+            close_dt = clean(q.get("actual_close_time") or p.get("scheduled_close_time") or q.get("scheduled_close_time") or "", 32)
             posts.append({
                 "id": p["id"],
-                "title": (p.get("title") or q.get("title") or "")[:90],
+                "title": clean(p.get("title") or q.get("title") or ""),
                 "open": open_dt[:10], "close": close_dt[:10],
                 "open_dt": open_dt[:16].replace("T", " "), "close_dt": close_dt[:16].replace("T", " "),
-                "kind": kind, "status": p.get("status") or q.get("status") or "?",
+                "kind": clean(kind, 40), "status": clean(p.get("status") or q.get("status") or "?", 20),
             })
         if not data.get("next") or not results:
             break
@@ -165,7 +174,7 @@ def main():
         def who(e):
             """Nom et id de l'entrée, quelle que soit la forme (user imbriqué ou champs à plat)."""
             u = e.get("user") if isinstance(e.get("user"), dict) else {}
-            return (u.get("username") or e.get("username") or e.get("aggregation_method") or "?",
+            return (clean(u.get("username") or e.get("username") or e.get("aggregation_method") or "?", 40),
                     u.get("id") or e.get("user_id"))
 
         for i, e in enumerate(entries, 1):
