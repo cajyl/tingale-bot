@@ -2,10 +2,22 @@ name: Forecast on new AI tournament questions
 
 on:
   workflow_dispatch:
-  # Cron en pause (19/10) : le reglement exige le formulaire de participation avant toute
-  # prevision en tournoi. Reactiver (decommenter) des que le sponsor a rempli le formulaire.
+    inputs:
+      extra_args:
+        description: "Arguments supplementaires pour main.py (ex. --only market-pulse-26q4 --no-publish)"
+        required: false
+        default: ""
+  # Cadence : horaire tant que la cle OpenRouter du bot n'est pas plafonnee (H-042 : limite 10 $,
+  # recharge automatique verifiee desactivee). Des que c'est fait : passer a "17,37,57 * * * *".
+  # Pourquoi : mesure du 24/10, chaque question des tournois bots n'est ouverte que 3 heures et GitHub
+  # n'executait le cron horaire que 4 a 5 fois par jour (20 questions manquees sur 32 depuis le 20/10).
+  # Le garde-fou de tentatives de main.py (2 essais par question, state/attempts.json) borne la
+  # depense d'une question defaillante, meme ouverte des semaines (avis risk-compliance du 24/10).
   schedule:
-    - cron: "17 * * * *" # chaque heure pendant la phase a budget borne (10 $) : une question qui echoue au parseur serait retentee a chaque run. Repasser a 20 min quand les credits sont confortables.
+    - cron: "17 * * * *"
+
+permissions:
+  contents: write # commit du compteur de tentatives (state/attempts.json)
 
 # Add concurrency group to prevent parallel runs
 concurrency:
@@ -60,10 +72,12 @@ jobs:
       - name: Run bot
         if: steps.guard.outputs.skip != 'true'
         run: |
-          poetry run python main.py
+          poetry run python main.py $EXTRA_ARGS
         # this reads the environment variables from the github repository.
         # Store under Settings --> Secrets and variables --> Actions
         env:
+          EXTRA_ARGS: ${{ inputs.extra_args }}
+          MARKET_PULSE_ENABLED: ${{ vars.MARKET_PULSE_ENABLED }}
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
@@ -72,3 +86,14 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+      - name: Enregistrer le compteur de tentatives
+        if: always() && steps.guard.outputs.skip != 'true'
+        run: |
+          if [ -n "$(git status --porcelain state/attempts.json)" ]; then
+            git config user.name "tingale-bot"
+            git config user.email "tingale-bot@users.noreply.github.com"
+            git add state/attempts.json
+            git commit -m "Garde-fou : tentatives par question ($(date -u +%Y-%m-%dT%H:%MZ))"
+            git pull --rebase
+            git push
+          fi

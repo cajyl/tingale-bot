@@ -1,7 +1,10 @@
 import argparse
 import asyncio
 import logging
-from datetime import datetime, timezone
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Literal
 
 import dotenv
@@ -126,10 +129,65 @@ class FallTemplateBot2026(ForecastBot):
     _concurrency_limiter = asyncio.Semaphore(_max_concurrent_questions)
     _structure_output_validation_samples = 2
 
+    # Garde-fou de tentatives (avis risk-compliance du 24/10/2026, condition 2 de l'action Market
+    # Pulse) : une question dont la prévision a échoué deux fois (parseur, modèle, réseau) n'est plus
+    # tentée, quelle que soit la durée de sa fenêtre d'ouverture. Une tentative = une recherche lancée
+    # (premier appel payant). Compteur persistant dans state/attempts.json, commité par le workflow ;
+    # les succès en sont retirés à la fin du passage (forget_successes), les entrées vieillissent 30 jours.
+    MAX_ATTEMPTS = 2
+    ATTEMPTS_PATH = Path(__file__).resolve().parent / "state" / "attempts.json"
+    ATTEMPTS_KEEP_DAYS = 30
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.attempts = self._load_attempts()
+
+    @classmethod
+    def _load_attempts(cls) -> dict:
+        try:
+            data = json.loads(cls.ATTEMPTS_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=cls.ATTEMPTS_KEEP_DAYS)).isoformat()
+        return {k: v for k, v in data.items() if isinstance(v, dict) and str(v.get("last", "")) >= cutoff}
+
+    def _save_attempts(self) -> None:
+        self.ATTEMPTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self.ATTEMPTS_PATH.write_text(
+            json.dumps(self.attempts, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    @staticmethod
+    def _question_key(question: MetaculusQuestion) -> str:
+        return str(getattr(question, "id_of_post", None) or getattr(question, "id_of_question", None) or question.page_url)
+
+    async def forecast_questions(self, questions, return_exceptions=False):
+        kept, blocked = [], []
+        for q in questions:
+            if self.attempts.get(self._question_key(q), {}).get("attempts", 0) >= self.MAX_ATTEMPTS:
+                blocked.append(q)
+            else:
+                kept.append(q)
+        for q in blocked:
+            logger.warning(f"Garde-fou : {q.page_url} déjà tentée {self.MAX_ATTEMPTS} fois sans succès, ignorée.")
+        return await super().forecast_questions(kept, return_exceptions)
+
+    def forget_successes(self, reports) -> None:
+        """Retire du compteur les questions dont le rapport a abouti, puis écrit le fichier."""
+        for r in reports:
+            if not isinstance(r, BaseException) and getattr(r, "question", None) is not None:
+                self.attempts.pop(self._question_key(r.question), None)
+        self._save_attempts()
+
     ##################################### RESEARCH #####################################
 
     async def run_research(self, question: MetaculusQuestion) -> str:
         async with self._concurrency_limiter:
+            # Une tentative est comptée dès que la recherche (premier appel payant) démarre.
+            entry = self.attempts.setdefault(self._question_key(question), {"attempts": 0, "url": question.page_url})
+            entry["attempts"] += 1
+            entry["last"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._save_attempts()
             research = ""
             researcher = self.get_llm("researcher")
 
@@ -697,11 +755,21 @@ if __name__ == "__main__":
         default="tournament",
         help="What to forecast on (default: tournament)",
     )
+    parser.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Passage à blanc : aucune prévision publiée sur Metaculus (validation du parseur sur un tournoi).",
+    )
+    parser.add_argument(
+        "--only",
+        default=None,
+        help="Mode tournament : ne traiter que ce tournoi (identifiant ou slug, ex. market-pulse-26q4).",
+    )
     args = parser.parse_args()
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
 
     check_environment(strict=True)
-    publish_to_metaculus = True
+    publish_to_metaculus = not args.no_publish
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
     # Modèles épinglés (2026-10-19). Le choix par défaut de forecasting-tools pointait sur
@@ -751,17 +819,26 @@ if __name__ == "__main__":
     # summary printers below.
     client = MetaculusClient()
     if run_mode == "tournament":
-        seasonal_tournament_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_AI_COMPETITION_ID, return_exceptions=True
+        targets = [
+            ("Fall FutureEval 2026", client.CURRENT_AI_COMPETITION_ID),
+            ("MiniBench", client.CURRENT_MINIBENCH_ID),
+        ]
+        # Market Pulse Challenge 26Q4 (7 500 $, bots explicitement admis et éligibles aux prix,
+        # identifiant donné par Metaculus : market-pulse-26q4 ; questions financières, « spot scoring »,
+        # fin le 31/12/2026). Activé par la variable de dépôt MARKET_PULSE_ENABLED=1 seulement après le
+        # passage à blanc (--only market-pulse-26q4 --no-publish) et la confirmation du sponsor que son
+        # compte personnel n'y prévoit pas (règle « une seule entrée, bot ou humain »). Avis
+        # risk-compliance du 24/10/2026, consigné dans experiments/E001 du dépôt augustin-gale.
+        if os.environ.get("MARKET_PULSE_ENABLED", "").strip() == "1":
+            targets.append(("Market Pulse 26Q4", "market-pulse-26q4"))
+        if args.only:
+            targets = [(args.only, args.only)]
+        forecast_reports = []
+        for label, tournament_id in targets:
+            logger.info(f"Tournoi : {label} ({tournament_id})")
+            forecast_reports += asyncio.run(
+                template_bot.forecast_on_tournament(tournament_id, return_exceptions=True)
             )
-        )
-        minibench_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                client.CURRENT_MINIBENCH_ID, return_exceptions=True
-            )
-        )
-        forecast_reports = seasonal_tournament_reports + minibench_reports
     elif run_mode == "metaculus_cup":
         # The Metaculus Cup may be uninitialized near the start of a season
         # (Jan/May/Sep). MetaculusClient.ACX_2025_TOURNAMENT = 32564 and
@@ -784,6 +861,7 @@ if __name__ == "__main__":
             )
         )
 
+    template_bot.forget_successes(forecast_reports)
     template_bot.log_report_summary(forecast_reports)
     print_run_summary_banner(
         forecast_reports,
