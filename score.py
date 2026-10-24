@@ -65,11 +65,16 @@ def list_posts(token, tournament, statuses, forecaster_id=None):
         results = data.get("results", [])
         for p in results:
             q = p.get("question") or {}
+            kind = (f"question:{q.get('type')}" if q else "groupe" if p.get("group_of_questions")
+                    else "conditionnelle" if p.get("conditional") else "carnet" if p.get("notebook") else "?")
+            open_dt = str(p.get("open_time") or q.get("open_time") or p.get("published_at") or "")
+            close_dt = str(q.get("actual_close_time") or p.get("scheduled_close_time") or q.get("scheduled_close_time") or "")
             posts.append({
                 "id": p["id"],
                 "title": (p.get("title") or q.get("title") or "")[:90],
-                "open": str(p.get("open_time") or q.get("open_time") or p.get("published_at") or "")[:10],
-                "close": str(p.get("scheduled_close_time") or q.get("scheduled_close_time") or "")[:10],
+                "open": open_dt[:10], "close": close_dt[:10],
+                "open_dt": open_dt[:16].replace("T", " "), "close_dt": close_dt[:16].replace("T", " "),
+                "kind": kind, "status": p.get("status") or q.get("status") or "?",
             })
         if not data.get("next") or not results:
             break
@@ -154,6 +159,7 @@ def main():
         open_missing = sorted((p for p in open_posts if p["id"] not in my_ids), key=lambda p: p["close"])
         since = [p for p in all_posts if p["open"] >= BOT_SINCE]
         since_mine = [p for p in since if p["id"] in my_ids]
+        since_missing = sorted((p for p in since if p["id"] not in my_ids), key=lambda p: p["open_dt"])
         rank, score, n = "—", "—", len(entries)
 
         def who(e):
@@ -177,6 +183,9 @@ def main():
               f"{len(open_missing)} non prévues ; ouvertes depuis le {BOT_SINCE} : {len(since)}, dont {len(since_mine)} prévues")
         for p in open_missing:
             print(f"    non prévue : {p['id']}  ouverte {p['open']}  ferme {p['close']}  {p['title']}")
+        for p in since_missing:
+            print(f"    manquée depuis l'entrée du bot : {p['id']}  {p['kind']}  {p['status']}  "
+                  f"ouverte {p['open_dt']}  fermée {p['close_dt']}  {p['title']}")
         if entries:
             print("  tête de classement : " + " ; ".join(
                 f"{who(e)[0]} {e.get('score', '')}" for e in entries[:5]))
@@ -184,6 +193,9 @@ def main():
                      f"{len(since_mine)}/{len(since)} | {rank} | {score} |")
         for p in open_missing:
             lines.append(f"- non prévue : [{p['id']}](https://www.metaculus.com/questions/{p['id']}/) ferme {p['close']} · {p['title']}")
+        for p in since_missing:
+            lines.append(f"- manquée depuis l'entrée du bot : [{p['id']}](https://www.metaculus.com/questions/{p['id']}/) "
+                         f"{p['kind']} · {p['status']} · ouverte {p['open_dt']} · fermée {p['close_dt']} · {p['title']}")
 
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
