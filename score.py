@@ -31,10 +31,16 @@ BOT_SINCE = os.environ.get("BOT_SINCE", "2026-10-20")  # entrée du bot en tourn
 
 def clean(value, limit=90):
     """Neutralise une chaîne venue de l'API avant de l'écrire dans le journal du job ou le résumé
-    Markdown : pas de retour à la ligne ni de caractère de contrôle (commandes de workflow
-    « ::… »), pas de barre verticale ni d'accent grave (tableau et code Markdown)."""
-    text = re.sub(r"[\x00-\x1f\x7f]", " ", str(value))
-    return text.replace("::", ": :").replace("|", "/").replace("`", "'").strip()[:limit]
+    Markdown : caractères de contrôle et séparateurs de ligne remplacés (une ligne qui commence par
+    « :: » serait une commande de workflow), suites de deux-points réduites à un seul, barre
+    verticale et accent grave remplacés (tableau et code Markdown). Les remplacements sont faits
+    après la troncature, pour qu'elle ne puisse pas faire réapparaître une séquence interdite."""
+    text = str(value)[: limit * 2]
+    text = re.sub(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]", " ", text)
+    text = re.sub(r":{2,}", ":", text).replace("|", "/").replace("`", "'").strip()[:limit]
+    text = re.sub(r":{2,}", ":", text)
+    assert "::" not in text
+    return text
 
 
 def api(path, params=None, token=None):
