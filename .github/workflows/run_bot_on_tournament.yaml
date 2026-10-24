@@ -16,23 +16,28 @@ on:
   schedule:
     - cron: "17 * * * *"
 
+# Le job de prevision execute du code tiers (bibliotheques Python) : il n'a que la lecture et ne garde
+# pas le jeton dans le depot local. Le compteur de tentatives est commite par un second job, sans code
+# tiers, seul detenteur du droit d'ecriture (revue de securite du 24/10).
 permissions:
-  contents: write # commit du compteur de tentatives (state/attempts.json)
+  contents: read
 
 # Add concurrency group to prevent parallel runs
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
 
-
-# Daily job to run the simple forecast bot
 jobs:
   forecast_job:
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
+    outputs:
+      attempts_changed: ${{ steps.attempts.outputs.changed }}
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       # Garde-fou : sans jeton, on s'arrête tout de suite (pas d'installation, pas d'échec bruyant).
       - name: Verifier les secrets
         id: guard
@@ -86,14 +91,44 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
-      - name: Enregistrer le compteur de tentatives
+      - name: Compteur de tentatives modifie ?
+        id: attempts
         if: always() && steps.guard.outputs.skip != 'true'
+        run: |
+          if [ -n "$(git status --porcelain state/attempts.json)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publier le compteur en artefact
+        if: always() && steps.attempts.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: attempts
+          path: state/attempts.json
+          retention-days: 3
+
+  save_attempts:
+    needs: forecast_job
+    if: always() && needs.forecast_job.outputs.attempts_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # seul job autorise a ecrire ; n'execute aucun code tiers
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: attempts
+          path: state
+      - name: Commiter le compteur de tentatives
         run: |
           if [ -n "$(git status --porcelain state/attempts.json)" ]; then
             git config user.name "tingale-bot"
             git config user.email "tingale-bot@users.noreply.github.com"
             git add state/attempts.json
             git commit -m "Garde-fou : tentatives par question ($(date -u +%Y-%m-%dT%H:%MZ))"
-            git pull --rebase
+            git pull --rebase origin "${GITHUB_REF_NAME}"
             git push
+          else
+            echo "Rien a enregistrer."
           fi

@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import re
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -832,6 +833,15 @@ if __name__ == "__main__":
         if os.environ.get("MARKET_PULSE_ENABLED", "").strip() == "1":
             targets.append(("Market Pulse 26Q4", "market-pulse-26q4"))
         if args.only:
+            # L'option ne contourne pas le verrou : un tournoi hors de la liste activée ne se traite
+            # qu'à blanc (--no-publish), et l'identifiant doit avoir la forme d'un slug ou d'un nombre.
+            if not re.fullmatch(r"[a-z0-9-]{1,80}", args.only):
+                parser.error("--only : identifiant attendu de la forme slug ou nombre ([a-z0-9-]).")
+            if args.only not in {str(t[1]) for t in targets} and publish_to_metaculus:
+                parser.error(
+                    "--only sur un tournoi non activé exige --no-publish ; "
+                    "l'activation d'un tournoi passe par la variable MARKET_PULSE_ENABLED."
+                )
             targets = [(args.only, args.only)]
         forecast_reports = []
         for label, tournament_id in targets:
