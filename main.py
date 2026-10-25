@@ -773,22 +773,34 @@ if __name__ == "__main__":
     publish_to_metaculus = not args.no_publish
     print_startup_banner(run_mode, will_publish=publish_to_metaculus)
 
-    # Modèles épinglés (2026-10-19). Le choix par défaut de forecasting-tools pointait sur
-    # `openai/gpt-4o-search-preview`, qui n'a plus d'endpoint sur OpenRouter (404 au premier
-    # test). Tout passe par OpenRouter (une seule clé) :
-    #   - researcher : perplexity/sonar, recherche web ancrée dans des sources, bon marché ;
-    #   - default    : gpt-5-mini, raisonnement de la prévision ;
-    #   - summarizer / parser : gpt-4.1-mini, tâches mécaniques.
-    # Toute évolution de ce choix se fait une variable à la fois, avec sa mesure.
-    template_bot = FallTemplateBot2026(
-        research_reports_per_question=1,
-        predictions_per_research_report=5,
-        use_research_summary_to_forecast=False,
-        publish_reports_to_metaculus=publish_to_metaculus,
-        folder_to_save_reports_to=None,
-        skip_previously_forecasted_questions=True,
-        extra_metadata_in_explanation=True,
-        llms={
+    # Modèles. Depuis le 25/10/2026, deux configurations, choisies par la présence de la clé :
+    #   - ANTHROPIC_API_KEY présente (crédits API Claude offerts au sponsor, 200 $/mois) : raisonnement
+    #     sur Claude Opus 5.5 (tête du classement des modèles FutureEval : Claude Opus 5 High 15,9 contre
+    #     GPT-5 High 11,0 au 24/10), résumé et parseur sur Claude Haiku 5.5 ; la recherche reste sur
+    #     perplexity/sonar via OpenRouter (recherche web ancrée, bon marché).
+    #   - sinon, configuration OpenRouter du 19/10 : perplexity/sonar, gpt-5-mini, gpt-4.1-mini.
+    # Le gabarit pointait sur `openai/gpt-4o-search-preview`, sans endpoint sur OpenRouter (404 au
+    # premier test). Toute évolution de ce choix se fait une variable à la fois, avec sa mesure (E001).
+    use_claude = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
+    if use_claude:
+        llms = {
+            "default": GeneralLlm(
+                model="anthropic/claude-opus-5-5",
+                temperature=0.3,
+                timeout=120,
+                allowed_tries=2,
+            ),
+            "summarizer": "anthropic/claude-haiku-5-5",
+            "researcher": GeneralLlm(
+                model="openrouter/perplexity/sonar",
+                temperature=0.1,
+                timeout=90,
+                allowed_tries=2,
+            ),
+            "parser": "anthropic/claude-haiku-5-5",
+        }
+    else:
+        llms = {
             "default": GeneralLlm(
                 model="openrouter/openai/gpt-5-mini",
                 temperature=0.3,
@@ -803,7 +815,17 @@ if __name__ == "__main__":
                 allowed_tries=2,
             ),
             "parser": "openrouter/openai/gpt-4.1-mini",
-        },
+        }
+    logger.info("Modèles : " + ("Claude (Opus 5.5 / Haiku 5.5) + sonar" if use_claude else "OpenRouter (gpt-5-mini / gpt-4.1-mini / sonar)"))
+    template_bot = FallTemplateBot2026(
+        research_reports_per_question=1,
+        predictions_per_research_report=5,
+        use_research_summary_to_forecast=False,
+        publish_reports_to_metaculus=publish_to_metaculus,
+        folder_to_save_reports_to=None,
+        skip_previously_forecasted_questions=True,
+        extra_metadata_in_explanation=True,
+        llms=llms,
     )
 
     # Per-mode tournament URL shown in the summary banner footer. These
