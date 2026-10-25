@@ -7,14 +7,15 @@ on:
         description: "Arguments supplementaires pour main.py (ex. --only market-pulse-26q4 --no-publish)"
         required: false
         default: ""
-  # Cadence : horaire tant que la cle OpenRouter du bot n'est pas plafonnee (H-042 : limite 10 $,
-  # recharge automatique verifiee desactivee). Des que c'est fait : passer a "17,37,57 * * * *".
+  # Cadence : toutes les 20 minutes depuis le 25/10/2026 (H-042 faite : cle OpenRouter du bot
+  # plafonnee a 10 $, recharge automatique desactivee). Minutes 17/37/57, hors du pic du planificateur.
   # Pourquoi : mesure du 24/10, chaque question des tournois bots n'est ouverte que 3 heures et GitHub
   # n'executait le cron horaire que 4 a 5 fois par jour (20 questions manquees sur 32 depuis le 20/10).
   # Le garde-fou de tentatives de main.py (2 essais par question, state/attempts.json) borne la
   # depense d'une question defaillante, meme ouverte des semaines (avis risk-compliance du 24/10).
+  # Repli (avis) : depense > 1,5 $/jour deux jours de suite ou credits < 2 $ -> retour a "17 * * * *".
   schedule:
-    - cron: "17 * * * *"
+    - cron: "17,37,57 * * * *"
 
 # Le job de prevision execute du code tiers (bibliotheques Python) : il n'a que la lecture et ne garde
 # pas le jeton dans le depot local. Le compteur de tentatives est commite par un second job, sans code
