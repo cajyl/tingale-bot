@@ -84,6 +84,7 @@ jobs:
         env:
           EXTRA_ARGS: ${{ inputs.extra_args }}
           MARKET_PULSE_ENABLED: ${{ vars.MARKET_PULSE_ENABLED }}
+          MINIBENCH_ENABLED: ${{ vars.MINIBENCH_ENABLED }}
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}

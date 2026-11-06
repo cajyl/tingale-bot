@@ -842,10 +842,12 @@ if __name__ == "__main__":
     # summary printers below.
     client = MetaculusClient()
     if run_mode == "tournament":
-        targets = [
-            ("Fall FutureEval 2026", client.CURRENT_AI_COMPETITION_ID),
-            ("MiniBench", client.CURRENT_MINIBENCH_ID),
-        ]
+        targets = [("Fall FutureEval 2026", client.CURRENT_AI_COMPETITION_ID)]
+        # MiniBench (1 000 $ par cycle) retiré le 06/11/2026 : règle du 05/11 du dépôt augustin-gale, sans
+        # crédits gratuits FutureEval ; le cycle ouvert le 02/11 avait coûté environ 16 $ en quatre jours.
+        # Réactivable par la variable de dépôt MINIBENCH_ENABLED=1.
+        if os.environ.get("MINIBENCH_ENABLED", "").strip() == "1":
+            targets.append(("MiniBench", client.CURRENT_MINIBENCH_ID))
         # Market Pulse Challenge 26Q4 (7 500 $, bots explicitement admis et éligibles aux prix,
         # identifiant donné par Metaculus : market-pulse-26q4 ; questions financières, « spot scoring »,
         # fin le 31/12/2026). Activé par la variable de dépôt MARKET_PULSE_ENABLED=1 seulement après le
@@ -862,7 +864,7 @@ if __name__ == "__main__":
             if args.only not in {str(t[1]) for t in targets} and publish_to_metaculus:
                 parser.error(
                     "--only sur un tournoi non activé exige --no-publish ; "
-                    "l'activation d'un tournoi passe par la variable MARKET_PULSE_ENABLED."
+                    "l'activation d'un tournoi passe par les variables MARKET_PULSE_ENABLED et MINIBENCH_ENABLED."
                 )
             targets = [(args.only, args.only)]
         forecast_reports = []
