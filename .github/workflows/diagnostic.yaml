@@ -1,0 +1,30 @@
+name: Diagnostic du bot (lecture seule)
+
+# Relevé à la demande des questions tranchées : réponse du bot, des autres bots, résultat, points,
+# et commentaire privé du bot (recherche et raisonnements) pour rejouer des réglages sur le passé.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Relever les questions tranchées
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OUT: diagnostic.json
+        run: python3 -E -s diagnostic.py
+      - name: Garder le relevé (3 jours)
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostic
+          path: diagnostic.json
+          retention-days: 3
