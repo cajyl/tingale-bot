@@ -143,6 +143,35 @@ def leaderboard(token, tournament):
     return None, []
 
 
+def prize_view(entries, who, my_id, my_name):
+    """Ce que le classement vaut en dollars aujourd'hui : part de prix du bot, barème par rang, et
+    bots de Metaculus (« metac- », même gabarit, un modèle chacun) pour comparer les modèles sur
+    les mêmes questions. Le prix suit le carré du score (FAQ des scores, « Tournaments ») ; les
+    montants bougent jusqu'à la résolution de toutes les questions."""
+    def num(v, fmt="{:.0f}"):
+        return fmt.format(v) if isinstance(v, (int, float)) else "—"
+
+    def line(e):
+        name, _ = who(e)
+        return (f"rang {e.get('rank') if e.get('rank') is not None else '—'} | {name} | score {num(e.get('score'), '{:.1f}')} | "
+                f"questions {num(e.get('contribution_count'))} | prix {num(e.get('prize'))} $ | "
+                f"part {num(e.get('percent_prize'), '{:.4f}')}" + (" | hors prix" if e.get("excluded") else ""))
+
+    ranked = [e for e in entries if isinstance(e.get("rank"), int)]
+    mine = next((e for e in entries if who(e)[1] == my_id or who(e)[0] == my_name), None)
+    if mine:
+        print("  bot : " + line(mine))
+    paid = [e for e in ranked if isinstance(e.get("prize"), (int, float)) and e["prize"] > 0 and not e.get("excluded")]
+    print(f"  entrées payées aujourd'hui : {len(paid)} ; dernier rang payé : {max((e['rank'] for e in paid), default='—')}")
+    for target in (1, 3, 5, 10, 20, 30, 50, 75, 100, 150):
+        e = next((x for x in ranked if x["rank"] == target and not x.get("excluded")), None)
+        if e:
+            print("  barème : " + line(e))
+    for e in entries:
+        if who(e)[0].startswith("metac-") and isinstance(e.get("score"), (int, float)):
+            print("  metac : " + line(e))
+
+
 def main():
     token = os.environ.get("METACULUS_TOKEN", "").strip()
     if not token:
@@ -204,6 +233,7 @@ def main():
         if entries:
             print("  tête de classement : " + " ; ".join(
                 f"{who(e)[0]} {e.get('score', '')}" for e in entries[:5]))
+            prize_view(entries, who, my_id, my_name)
         lines.append(f"| {label} | {total} | {mine} | {len(open_posts)} | {len(open_missing)} | "
                      f"{len(since_mine)}/{len(since)} | {rank} | {score} |")
         for p in open_missing:
