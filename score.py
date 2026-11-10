@@ -24,7 +24,7 @@ import urllib.request
 
 BASE = "https://www.metaculus.com/api"
 PAUSE = 1.0  # secondes entre deux appels
-DEFAULT_TOURNAMENTS = "33121:Fall FutureEval 2026,minibench:MiniBench"
+DEFAULT_TOURNAMENTS = "33121:Fall FutureEval 2026,minibench:MiniBench,market-pulse-26q4:Market Pulse 26Q4"
 STATUSES = ["open", "closed", "resolved", "upcoming"]
 BOT_SINCE = os.environ.get("BOT_SINCE", "2026-10-20")  # entrée du bot en tournoi : mesure de couverture
 

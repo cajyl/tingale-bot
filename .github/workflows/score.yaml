@@ -21,3 +21,7 @@ jobs:
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
         run: python3 -I score.py
+      - name: Diagnostic par question (questions tranchées)
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+        run: python3 -E -s diagnostic.py
