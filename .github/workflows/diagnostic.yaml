@@ -1,7 +1,7 @@
 name: Diagnostic du bot (lecture seule)
 
-# Relevé à la demande des questions tranchées : réponse du bot, des autres bots, résultat, points,
-# et commentaire privé du bot (recherche et raisonnements) pour rejouer des réglages sur le passé.
+# Relevé à la demande des questions tranchées : modèle, réponse du bot, des autres bots, résultat et
+# points. Dépôt public : rien des questions ouvertes ni des commentaires privés, aucun fichier gardé.
 on:
   workflow_dispatch:
 
@@ -20,11 +20,4 @@ jobs:
       - name: Relever les questions tranchées
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
-          OUT: diagnostic.json
         run: python3 -E -s diagnostic.py
-      - name: Garder le relevé (3 jours)
-        uses: actions/upload-artifact@v4
-        with:
-          name: diagnostic
-          path: diagnostic.json
-          retention-days: 3

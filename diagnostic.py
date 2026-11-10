@@ -2,21 +2,21 @@
 """Diagnostic du bot : pour chaque question TRANCHÉE qu'il a prévue, sa réponse, celle des autres
 bots, le résultat et les points gagnés ou perdus. Lecture seule : rien n'est publié.
 
-Pourquoi : le classement de Fall (06/11) place le bot 233e sur 454 avec un score négatif ; pour
-l'améliorer, il faut savoir sur quelles questions il perd, et récupérer la recherche et les
-raisonnements déjà produits (ses commentaires privés) pour rejouer d'autres réglages dessus
-sans refaire de recherche (pas de fuite du résultat dans un test sur le passé).
+Pourquoi : le classement de Fall du 06/11 (233e sur 454, score négatif) ne reposait que sur deux
+questions, prévues par l'ancien modèle ; avant de toucher au bot, il faut savoir quel modèle a
+répondu à quoi, et ce que chaque question a rapporté.
 
-Seules les questions résolues sont relevées : rien ne renseigne sur une question encore ouverte.
+Le dépôt est public, donc son journal aussi : seules les questions et sous-questions TRANCHÉES
+sont écrites, et rien du commentaire privé du bot n'en sort, hormis le nom du modèle qui a
+répondu. Aucun fichier n'est conservé.
 
 Usage (variables d'environnement) :
     METACULUS_TOKEN   jeton du compte bot (obligatoire)
     TOURNAMENTS       liste "id-ou-slug:libellé" séparés par des virgules (facultatif)
-    OUT               fichier JSON de sortie (défaut : diagnostic.json)
 """
 
-import json
 import os
+import re
 import sys
 import urllib.error
 
@@ -47,12 +47,13 @@ def summarize(post, q):
     """Réponse du bot, agrégat des autres et points, sous une forme comparable entre types."""
     kind = q.get("type")
     mine = latest(q.get("my_forecasts"))
-    agg = latest((q.get("aggregations") or {}).get("recency_weighted"))
+    aggregations = q.get("aggregations") or {}
+    agg = latest(aggregations.get("recency_weighted") or aggregations.get("unweighted"))
     res = q.get("resolution")
     row = {"post": post["id"], "question": q.get("id"), "type": kind, "title": q.get("title") or post.get("title"),
            "resolution": res, "open": q.get("open_time"), "close": q.get("actual_close_time") or q.get("scheduled_close_time"),
            "score_data": (q.get("my_forecasts") or {}).get("score_data"),
-           "agg_score_data": ((q.get("aggregations") or {}).get("recency_weighted") or {}).get("score_data")}
+           }
     if kind == "binary":
         fv = mine.get("forecast_values") or []
         row["mine"] = fv[1] if len(fv) == 2 else None
@@ -66,34 +67,30 @@ def summarize(post, q):
             i = options.index(res)
             row["mine"] = fv[i] if i < len(fv) else None
             row["others"] = fa[i] if i < len(fa) else None
-        row["options"] = options
-        row["mine_all"] = fv
-        row["others_all"] = fa
-    else:
-        row["mine_centers"] = mine.get("centers")
-        row["mine_bounds"] = [mine.get("interval_lower_bounds"), mine.get("interval_upper_bounds")]
-        row["others_centers"] = agg.get("centers")
-        row["scaling"] = q.get("scaling")
     return row
 
 
-def comment_of(token, post_id, my_id):
-    """Dernier commentaire privé du bot sur la question (recherche + raisonnements)."""
-    for params in ({"post": post_id, "author": my_id, "limit": 5},
-                   {"on_post": post_id, "author": my_id, "limit": 5}):
-        try:
-            data = api("/comments/", params, token)
-        except urllib.error.HTTPError as e:
-            last = f"HTTP {e.code}"
-            continue
-        items = data.get("results", data) if isinstance(data, dict) else data
-        items = [c for c in items if isinstance(c, dict)]
-        mine = [c for c in items if (c.get("author") or {}).get("id") in (my_id, None) or c.get("author_id") == my_id]
-        if mine:
-            mine.sort(key=lambda c: c.get("created_at") or "")
-            return {"text": (mine[-1].get("text") or "")[:120000], "created_at": mine[-1].get("created_at")}
-        last = f"vide ({len(items)} commentaires, clés {sorted(items[0].keys()) if items else []})"
-    return {"error": last}
+def author_id(comment):
+    a = comment.get("author")
+    return a.get("id") if isinstance(a, dict) else a if isinstance(a, int) else comment.get("author_id")
+
+
+def model_of(token, post_id, my_id):
+    """Modèle qui a répondu, lu dans le dernier commentaire privé du bot sur ce post. Seuls les
+    commentaires dont l'auteur est le bot et le post celui demandé sont retenus ; le texte n'est
+    jamais écrit ni conservé."""
+    try:
+        data = api("/comments/", {"post": post_id, "author": my_id, "limit": 5}, token)
+    except urllib.error.HTTPError as e:
+        return f"HTTP {e.code}"
+    items = data.get("results", []) if isinstance(data, dict) else data
+    mine = [c for c in items if isinstance(c, dict) and author_id(c) == my_id
+            and c.get("on_post", post_id) == post_id]
+    if not mine:
+        return "?"
+    mine.sort(key=lambda c: c.get("created_at") or "")
+    m = re.search(r"'default': \{'original_model': '([^']+)'", mine[-1].get("text") or "")
+    return clean(m.group(1).rsplit("/", 1)[-1], 40) if m else "?"
 
 
 def main():
@@ -115,8 +112,9 @@ def main():
         for post in posts:
             questions = [post["question"]] if post.get("question") else \
                 ((post.get("group_of_questions") or {}).get("questions") or [])
+            model = None
             for q in questions:
-                if not q.get("my_forecasts"):
+                if not q.get("my_forecasts") or q.get("resolution") is None:
                     continue
                 if not shown_keys:
                     print("  clés my_forecasts : " + clean(sorted(q["my_forecasts"].keys()), 300))
@@ -125,12 +123,9 @@ def main():
                     shown_keys = True
                 row = summarize(post, q)
                 row["tournament"] = label
-                row["comment"] = comment_of(token, post["id"], my_id)
+                model = model or model_of(token, post["id"], my_id)
+                row["model"] = model
                 rows.append(row)
-
-    out = os.environ.get("OUT", "diagnostic.json")
-    with open(out, "w", encoding="utf-8") as f:
-        json.dump(rows, f, ensure_ascii=False, indent=1)
 
     def pts(r):
         s = r.get("score_data") or {}
@@ -138,24 +133,27 @@ def main():
 
     rows.sort(key=lambda r: (pts(r) is None, pts(r) or 0))
     lines = ["## Diagnostic : questions tranchées", "",
-             "| Tournoi | Post | Type | Bot | Autres bots | Résultat | Points (spot peer) | Question |", "|---|---|---|---|---|---|---|---|"]
+             "| Tournoi | Post | Modèle | Type | Bot | Autres bots | Résultat | Points (spot peer) | Question |", "|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
         f = lambda v: f"{v:.2f}" if isinstance(v, (int, float)) else "—"
         p = pts(r)
-        line = (f"| {r['tournament']} | {r['post']} | {r['type']} | {f(r.get('mine'))} | {f(r.get('others'))} | "
+        line = (f"| {r['tournament']} | {r['post']} | {r['model']} | {r['type']} | {f(r.get('mine'))} | {f(r.get('others'))} | "
                 f"{clean(r.get('resolution'), 30)} | {f(p)} | {clean(r.get('title'), 70)} |")
         lines.append(line)
         print("  " + line)
     total = sum(pts(r) or 0 for r in rows)
-    comments = sum(1 for r in rows if r["comment"].get("text"))
-    print(f"Total : {len(rows)} questions, somme des points {total:.1f}, commentaires récupérés {comments}")
-    errors = {r["comment"].get("error") for r in rows if r["comment"].get("error")}
-    if errors:
-        print("  commentaires non lus : " + clean(sorted(errors), 300))
+    print(f"Total : {len(rows)} questions tranchées, somme des points {total:.1f}")
+    by_model = {}
+    for r in rows:
+        if pts(r) is not None:
+            by_model.setdefault((r["tournament"], r["model"]), []).append(pts(r))
+    for (t, m), v in sorted(by_model.items()):
+        lines.append(f"- {t}, {m} : {len(v)} tranchées, somme {sum(v):.1f}, moyenne {sum(v) / len(v):.1f}")
+        print(f"  {t}, {m} : {len(v)} tranchées, somme {sum(v):.1f}, moyenne {sum(v) / len(v):.1f}")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as fh:
-            fh.write("\n".join(lines) + f"\n\nTotal : {len(rows)} questions, somme {total:.1f}\n")
+            fh.write("\n".join(lines) + "\n")
     return 0
 
 
