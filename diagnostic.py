@@ -87,6 +87,8 @@ def model_of(token, post_id, my_id):
     mine = [c for c in items if isinstance(c, dict) and author_id(c) == my_id
             and c.get("on_post", post_id) == post_id]
     if not mine:
+        seen = [(type(c.get("author")).__name__, author_id(c) == my_id, c.get("on_post")) for c in items if isinstance(c, dict)]
+        print(f"  (post {post_id} : aucun commentaire du bot parmi {clean(seen, 200)})")
         return "?"
     mine.sort(key=lambda c: c.get("created_at") or "")
     m = re.search(r"'default': \{'original_model': '([^']+)'", mine[-1].get("text") or "")
