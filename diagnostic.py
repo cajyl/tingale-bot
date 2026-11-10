@@ -7,8 +7,8 @@ questions, prévues par l'ancien modèle ; avant de toucher au bot, il faut savo
 répondu à quoi, et ce que chaque question a rapporté.
 
 Le dépôt est public, donc son journal aussi : seules les questions et sous-questions TRANCHÉES
-sont écrites, et rien du commentaire privé du bot n'en sort, hormis le nom du modèle qui a
-répondu. Aucun fichier n'est conservé.
+sont écrites ; les commentaires privés du bot ne sont pas lus (le modèle se déduit de l'heure de
+la prévision). Aucun fichier n'est conservé.
 
 Usage (variables d'environnement) :
     METACULUS_TOKEN   jeton du compte bot (obligatoire)
@@ -16,9 +16,9 @@ Usage (variables d'environnement) :
 """
 
 import os
-import re
 import sys
 import urllib.error
+from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from score import api, clean  # noqa: E402
@@ -70,33 +70,16 @@ def summarize(post, q):
     return row
 
 
-def author_id(comment):
-    a = comment.get("author")
-    return a.get("id") if isinstance(a, dict) else a if isinstance(a, int) else comment.get("author_id")
+# Modèle qui a répondu, d'après l'heure de la prévision : Claude Opus 5.5 depuis le 25/10 13:39 UTC
+# (commit f9c27e7), gpt-5-mini avant. Pas besoin de lire les commentaires privés du bot.
+SWITCH_TO_CLAUDE = datetime(2026, 10, 25, 13, 39, tzinfo=timezone.utc).timestamp()
 
 
-def model_of(token, post_id, my_id):
-    """Modèle qui a répondu, lu dans le dernier commentaire privé du bot sur ce post. Seuls les
-    commentaires dont l'auteur est le bot et le post celui demandé sont retenus ; le texte n'est
-    jamais écrit ni conservé."""
-    mine = []
-    # Selon le post, l'API filtre par « post » ou par « on_post » (le premier rend une liste vide
-    # sur les groupes de Market Pulse, vu le 10/11) : on essaie l'un puis l'autre.
-    for key in ("post", "on_post"):
-        try:
-            data = api("/comments/", {key: post_id, "author": my_id, "limit": 5}, token)
-        except urllib.error.HTTPError as e:
-            return f"HTTP {e.code}"
-        items = data.get("results", []) if isinstance(data, dict) else data
-        mine = [c for c in items if isinstance(c, dict) and author_id(c) == my_id
-                and c.get("on_post", post_id) == post_id]
-        if mine:
-            break
-    if not mine:
+def model_of(q):
+    start = latest(q.get("my_forecasts")).get("start_time")
+    if not isinstance(start, (int, float)):
         return "?"
-    mine.sort(key=lambda c: c.get("created_at") or "")
-    m = re.search(r"'default': \{'original_model': '([^']+)'", mine[-1].get("text") or "")
-    return clean(m.group(1).rsplit("/", 1)[-1], 40) if m else "?"
+    return "claude-opus-5-5" if start >= SWITCH_TO_CLAUDE else "gpt-5-mini"
 
 
 def main():
@@ -118,7 +101,6 @@ def main():
         for post in posts:
             questions = [post["question"]] if post.get("question") else \
                 ((post.get("group_of_questions") or {}).get("questions") or [])
-            model = None
             for q in questions:
                 if not q.get("my_forecasts") or q.get("resolution") is None:
                     continue
@@ -129,8 +111,7 @@ def main():
                     shown_keys = True
                 row = summarize(post, q)
                 row["tournament"] = label
-                model = model or model_of(token, post["id"], my_id)
-                row["model"] = model
+                row["model"] = model_of(q)
                 rows.append(row)
 
     def pts(r):
