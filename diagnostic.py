@@ -79,16 +79,20 @@ def model_of(token, post_id, my_id):
     """Modèle qui a répondu, lu dans le dernier commentaire privé du bot sur ce post. Seuls les
     commentaires dont l'auteur est le bot et le post celui demandé sont retenus ; le texte n'est
     jamais écrit ni conservé."""
-    try:
-        data = api("/comments/", {"post": post_id, "author": my_id, "limit": 5}, token)
-    except urllib.error.HTTPError as e:
-        return f"HTTP {e.code}"
-    items = data.get("results", []) if isinstance(data, dict) else data
-    mine = [c for c in items if isinstance(c, dict) and author_id(c) == my_id
-            and c.get("on_post", post_id) == post_id]
+    mine = []
+    # Selon le post, l'API filtre par « post » ou par « on_post » (le premier rend une liste vide
+    # sur les groupes de Market Pulse, vu le 10/11) : on essaie l'un puis l'autre.
+    for key in ("post", "on_post"):
+        try:
+            data = api("/comments/", {key: post_id, "author": my_id, "limit": 5}, token)
+        except urllib.error.HTTPError as e:
+            return f"HTTP {e.code}"
+        items = data.get("results", []) if isinstance(data, dict) else data
+        mine = [c for c in items if isinstance(c, dict) and author_id(c) == my_id
+                and c.get("on_post", post_id) == post_id]
+        if mine:
+            break
     if not mine:
-        seen = [(type(c.get("author")).__name__, author_id(c) == my_id, c.get("on_post")) for c in items if isinstance(c, dict)]
-        print(f"  (post {post_id} : aucun commentaire du bot parmi {clean(seen, 200)})")
         return "?"
     mine.sort(key=lambda c: c.get("created_at") or "")
     m = re.search(r"'default': \{'original_model': '([^']+)'", mine[-1].get("text") or "")
