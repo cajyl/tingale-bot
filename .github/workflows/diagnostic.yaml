@@ -21,3 +21,9 @@ jobs:
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
         run: python3 -E -s diagnostic.py
+      # Dates des sous-questions de Market Pulse : identifiants, états et dates seulement (aucune
+      # valeur de prévision, aucun titre, aucun commentaire), y compris pour les questions ouvertes.
+      - name: Dates de Market Pulse
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+        run: python3 -E -s marketpulse_dates.py

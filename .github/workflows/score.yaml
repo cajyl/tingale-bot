@@ -2,8 +2,14 @@ name: Score du bot (lecture seule)
 
 on:
   workflow_dispatch:
+    inputs:
+      essai_alerte:
+        description: "Forcer l'alerte pour essayer le job de l'issue (hors main : aucune issue n'est ecrite)"
+        type: boolean
+        required: false
+        default: false
   schedule:
-    - cron: "5 6 * * 5" # vendredi 06:05 UTC, avant le point hebdomadaire du projet
+    - cron: "5 6 * * *" # chaque jour 06:05 UTC (le vendredi, avant le point hebdomadaire du projet)
 
 permissions:
   contents: read
@@ -11,9 +17,17 @@ permissions:
 jobs:
   score:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # lire l'heure du dernier releve reussi, rien d'autre
+    outputs:
+      alerte: ${{ steps.alarmes.outputs.alerte }}
+      texte: ${{ steps.alarmes.outputs.texte }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -25,3 +39,52 @@ jobs:
         env:
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
         run: python3 -E -s diagnostic.py
+      - name: Heure du dernier releve reussi
+        id: dernier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          t=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow score.yaml --branch "$GITHUB_REF_NAME" \
+                --status success --limit 1 --json createdAt --jq '.[0].createdAt // empty' || true)
+          echo "Dernier releve reussi : ${t:-aucun (fenetre de 24 h)}"
+          echo "t=$t" >> "$GITHUB_OUTPUT"
+      - name: Alarmes (couverture de Fall, solde OpenRouter)
+        id: alarmes
+        env:
+          METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DERNIER_RELEVE: ${{ steps.dernier.outputs.t }}
+          ESSAI_ALERTE: ${{ inputs.essai_alerte }}
+        run: python3 -E -s alarmes.py
+
+  # Ecrit l'issue d'alarme. Aucun code tiers, aucun checkout : seulement le client gh du runner,
+  # avec le seul droit d'ecrire des issues. Il ne recoit du premier job qu'un drapeau et une phrase.
+  # Hors de main (essai sur une branche), il dit ce qu'il ferait sans rien ecrire.
+  alarme:
+    needs: score
+    if: needs.score.outputs.alerte == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: "Ouvrir ou commenter l'issue « Robot : à regarder »"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEXTE: ${{ needs.score.outputs.texte }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          TITRE="Robot : à regarder"
+          corps=$(printf 'Relevé quotidien : %s.\n\nPassage : %s\n' "$TEXTE" "$RUN_URL")
+          num=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITRE\"" \
+                  --json number,title --jq "map(select(.title == \"$TITRE\")) | .[0].number // empty")
+          if [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "Essai sur $GITHUB_REF_NAME : aucune issue ecrite."
+            echo "Issue ouverte du meme titre : ${num:-aucune} ; on aurait $([ -n "$num" ] && echo commente || echo ouvert) :"
+            echo "$corps"
+            exit 0
+          fi
+          if [ -n "$num" ]; then
+            printf '%s\n' "$corps" | gh issue comment "$num" --repo "$GITHUB_REPOSITORY" --body-file -
+          else
+            printf '%s\n' "$corps" | gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITRE" --body-file -
+          fi
