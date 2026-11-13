@@ -7,7 +7,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from marketpulse_veille import choisir_veille, dates_de_question
+from marketpulse_veille import choisir_veille, cle_compteur, dates_de_question, marquer, non_epuisees
 
 MAINTENANT = datetime(2026, 11, 16, 12, 0, tzinfo=timezone.utc)
 H = timedelta(hours=1)
@@ -105,6 +105,42 @@ class DatesDeQuestion(unittest.TestCase):
         vide = SimpleNamespace(api_json={}, close_time=None)
         self.assertIsNone(dates_de_question(vide)["derniere_prevision"])
 
+
+
+class Compteur(unittest.TestCase):
+    """Plafond persistant : deux choix au plus par sous-question, quoi que dise l'API."""
+
+    def test_deux_choix_puis_plus_rien_meme_si_l_api_reste_perimee(self):
+        compteur = {}
+        e = sq("a", notation=MAINTENANT + 23 * H, cloture=MAINTENANT + 5 * J, derniere=MAINTENANT - 10 * J)
+        e["id_question"] = 46248
+        passages = 0
+        for i in range(72):  # un passage toutes les 20 minutes pendant 24 heures, date de l'API jamais mise à jour
+            choisies = choisir_veille(non_epuisees([e], compteur), MAINTENANT + i * 20 * timedelta(minutes=1))
+            for c in choisies:
+                marquer(compteur, c["id_question"], MAINTENANT)
+                passages += 1
+        self.assertEqual(passages, 2)
+
+    def test_un_succes_ferme_la_sous_question(self):
+        compteur = {}
+        e = sq("a", notation=MAINTENANT + 23 * H, derniere=MAINTENANT - 10 * J)
+        e["id_question"] = 1
+        marquer(compteur, 1, MAINTENANT)
+        self.assertEqual(noms(non_epuisees([e], compteur)), ["a"])
+        marquer(compteur, 1, MAINTENANT, termine=True)
+        self.assertEqual(non_epuisees([e], compteur), [])
+
+    def test_sans_identifiant_jamais_choisie(self):
+        e = sq("a", notation=MAINTENANT + 23 * H, derniere=MAINTENANT - 10 * J)
+        self.assertEqual(non_epuisees([e], {}), [])
+
+    def test_le_compteur_a_la_forme_du_fichier_de_tentatives(self):
+        compteur = {"46016": {"attempts": 1, "last": "2026-11-16T12:00:00+00:00"}}
+        marquer(compteur, 46248, MAINTENANT)
+        self.assertEqual(compteur[cle_compteur(46248)]["attempts"], 1)
+        self.assertIn("last", compteur[cle_compteur(46248)])
+        self.assertEqual(compteur["46016"]["attempts"], 1)  # les clés du garde-fou ordinaire ne bougent pas
 
 if __name__ == "__main__":
     unittest.main()

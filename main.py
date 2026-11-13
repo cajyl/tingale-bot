@@ -27,6 +27,8 @@ from marketpulse_veille import (
     MARKET_PULSE_ID,
     choisir_veille,
     dates_de_question,
+    marquer as marquer_veille,
+    non_epuisees,
     fmt as fmt_date,
     instant_de_notation,
 )
@@ -304,11 +306,22 @@ class FallTemplateBot2026(ForecastBot):
             q for q in questions
             if q.already_forecasted and getattr(q.state, "value", q.state) == "open"
         ]
-        choisies = choisir_veille([dates_de_question(q) for q in deja_prevues], maintenant)
+        # Plafond persistant : une sous-question n'est choisie que deux fois au plus (un essai, une reprise),
+        # quoi que dise l'API ensuite. Le compteur vit dans state/attempts.json (clés « veille:<id> »),
+        # commité par le workflow comme le garde-fou de tentatives.
+        candidates = non_epuisees([dates_de_question(q) for q in deja_prevues], self.attempts)
+        choisies = choisir_veille(candidates, maintenant)
         logger.info(
             f"Market Pulse, veille de la notation : {len(choisies)} sous-question(s) à refaire "
             f"sur {len(deja_prevues)} ouverte(s) déjà prévue(s) (heure courante {fmt_date(maintenant)})"
         )
+        # Contrôle de lecture, identifiants et dates seulement : ce que le robot lit pour chaque sous-question
+        # ouverte déjà prévue (une date « - » signalerait un champ absent de la réponse de l'API).
+        for d in candidates[:40]:
+            logger.info(
+                f"VEILLE lue post={d['id_post']} question={d['id_question']} "
+                f"notation={fmt_date(instant_de_notation(d))} derniere_prevision={fmt_date(d['derniere_prevision'])}"
+            )
         for d in choisies:
             source = "spot" if d.get("spot_scoring_time") else "cloture"
             logger.info(
@@ -318,6 +331,9 @@ class FallTemplateBot2026(ForecastBot):
             )
         if not choisies:
             return []
+        for d in choisies:
+            marquer_veille(self.attempts, d["id_question"], maintenant)
+        self._save_attempts()  # écrit avant le premier appel payant : un passage interrompu compte quand même
         precedent = self.skip_previously_forecasted_questions
         # Seul moyen de forcer une question déjà prévue dans forecasting-tools 0.3.4 : le filtre
         # `already_forecasted` de ForecastBot.forecast_questions dépend de cette option. Elle n'est levée
@@ -331,7 +347,9 @@ class FallTemplateBot2026(ForecastBot):
             if isinstance(r, BaseException):
                 logger.warning(f"VEILLE échec : {type(r).__name__}")
             else:
+                marquer_veille(self.attempts, r.question.id_of_question, maintenant, termine=True)
                 logger.info(f"VEILLE terminée post={r.question.id_of_post} question={r.question.id_of_question}")
+        self._save_attempts()
         return reports
 
     async def _run_individual_question(self, question: MetaculusQuestion):

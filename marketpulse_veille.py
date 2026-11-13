@@ -6,8 +6,11 @@ une fois sa prévision de chaque sous-question dans les 24 heures qui précèden
 antérieure à (instant de notation moins 24 heures). Six au plus par passage, les plus proches de la
 notation d'abord ; une sous-question dont l'instant de notation est passé n'est jamais refaite.
 
-Une seule prévision refaite par sous-question, sans état à conserver : après la nouvelle prévision, la
-dernière prévision du robot est postérieure à (notation moins 24 heures), la condition devient fausse.
+Une seule prévision refaite par sous-question : après la nouvelle prévision, la dernière prévision du
+robot est postérieure à (notation moins 24 heures), la condition devient fausse. Ceinture en plus des
+bretelles : un compteur persistant (clés `veille:<id>` du fichier de tentatives du robot) plafonne à deux
+le nombre de fois où une sous-question peut être choisie, même si l'API tardait à refléter la nouvelle
+prévision ; sans lui, une donnée périmée ferait refaire six sous-questions toutes les 20 minutes.
 
 Bibliothèque standard seulement, pour être testé sans les dépendances du robot
 (`python3 -m unittest test_marketpulse_veille`).
@@ -89,6 +92,40 @@ def choisir_veille(
         retenus.append((notation, rang, element))
     retenus.sort(key=lambda t: (t[0], t[1]))
     return [element for _, _, element in retenus[: max(0, maximum)]]
+
+
+MAXIMUM_DE_CHOIX = 2  # nombre de fois où une même sous-question peut être choisie (un essai, une reprise)
+PREFIXE_COMPTEUR = "veille:"
+
+
+def cle_compteur(id_question: Any) -> str:
+    return f"{PREFIXE_COMPTEUR}{id_question}"
+
+
+def non_epuisees(elements: Iterable[Any], compteur: dict, maximum: int = MAXIMUM_DE_CHOIX) -> list[Any]:
+    """Écarte les éléments déjà choisis `maximum` fois (ou déjà refaits avec succès), d'après le compteur.
+
+    Le compteur est le dictionnaire de tentatives du robot : {clé: {"attempts": n, "last": iso}}.
+    Un élément sans identifiant de question est écarté : sans clé, on ne pourrait pas le plafonner."""
+    gardes = []
+    for element in elements:
+        ident = _lire(element, "id_question")
+        if ident is None:
+            continue
+        entree = compteur.get(cle_compteur(ident))
+        deja = entree.get("attempts", 0) if isinstance(entree, dict) else 0
+        if deja < maximum:
+            gardes.append(element)
+    return gardes
+
+
+def marquer(compteur: dict, id_question: Any, maintenant: datetime, termine: bool = False,
+            maximum: int = MAXIMUM_DE_CHOIX) -> None:
+    """Compte un choix de plus pour cette sous-question ; `termine` la ferme (reprévision réussie)."""
+    cle = cle_compteur(id_question)
+    entree = compteur.get(cle)
+    deja = entree.get("attempts", 0) if isinstance(entree, dict) else 0
+    compteur[cle] = {"attempts": maximum if termine else min(maximum, deja + 1), "last": en_date(maintenant).isoformat()}
 
 
 def dates_de_question(question: Any) -> dict:
