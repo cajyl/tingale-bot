@@ -179,3 +179,30 @@ jobs:
           else
             printf '%s\n' "$corps" | gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITRE" --body-file -
           fi
+
+  # Releve quotidien : le cron de GitHub de score.yaml ne part pas toujours (celui du vendredi n'est
+  # souvent pas parti). Ce job, sans code tiers ni checkout, declenche le releve s'il n'a pas tourne
+  # sur main depuis 24 heures. Le releve porte les alarmes (question de Fall manquee, solde OpenRouter).
+  releve_quotidien:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Lancer le releve s'il date de plus de 24 heures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dernier=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow score.yaml --branch main --limit 1 \
+                      --json createdAt --jq '.[0].createdAt // empty' || true)
+          if [ -n "$dernier" ]; then
+            age=$(( $(date -u +%s) - $(date -u -d "$dernier" +%s) ))
+          else
+            age=999999
+          fi
+          echo "Dernier releve : ${dernier:-aucun} (age : ${age} s)"
+          if [ "$age" -ge 86400 ]; then
+            gh workflow run score.yaml --repo "$GITHUB_REPOSITORY" --ref main && echo "Releve declenche."
+          else
+            echo "Releve de moins de 24 heures : rien a faire."
+          fi

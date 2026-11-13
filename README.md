@@ -52,6 +52,8 @@ si possible, sa mesure.
   OpenRouter et les questions de Fall fermées sans prévision depuis le dernier relevé réussi ; s'il
   y en a, ou si le solde passe sous 2 $, un second job (droit d'écrire des issues, aucun code tiers)
   ouvre ou commente l'issue « Robot : à regarder ».
+- Relevé quotidien fiabilisé : le job `releve_quotidien` du workflow de prévision (sans code tiers) déclenche
+  `score.yaml` s'il n'a pas tourné sur `main` depuis 24 heures, parce que le cron de GitHub ne part pas toujours.
 - Alarme du job de prévision : après trois échecs d'affilée, le job `alarme_echec` ouvre ou commente
   l'issue « Robot en échec » (une fois par série d'échecs).
 - `Diagnostic du bot (lecture seule)` : manuel ; questions tranchées (`diagnostic.py`) et dates des
