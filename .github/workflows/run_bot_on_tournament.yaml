@@ -134,3 +134,44 @@ jobs:
           else
             echo "Rien a enregistrer."
           fi
+
+  # Alarme : trois echecs d'affilee du job de prevision (ce passage et les deux precedents du meme
+  # workflow, sur la meme branche) ouvrent l'issue « Robot en échec », ou la commentent si elle est
+  # deja ouverte. Une seule alerte par serie d'echecs : on n'ecrit que quand la serie atteint
+  # exactement trois, pas toutes les 20 minutes ensuite. Aucun code tiers, aucun checkout : le client
+  # gh du runner, avec le droit d'ecrire des issues et de lire l'historique des passages.
+  alarme_echec:
+    needs: forecast_job
+    if: always() && needs.forecast_job.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - name: Trois echecs d'affilee ?
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Conclusions des passages termines precedents, du plus recent au plus ancien (la file
+          # « concurrency » du workflow garantit qu'ils sont termines).
+          prec=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow run_bot_on_tournament.yaml \
+                   --branch "$GITHUB_REF_NAME" --limit 10 --json databaseId,status,conclusion \
+                   --jq "map(select(.status == \"completed\" and .databaseId != $GITHUB_RUN_ID)) | .[0:3] | map(.conclusion) | join(\" \")")
+          set -- $prec
+          echo "Passages precedents : ${prec:-aucun}"
+          if [ "$1" != "failure" ] || [ "$2" != "failure" ]; then
+            echo "Moins de trois echecs d'affilee : pas d'alarme."; exit 0
+          fi
+          if [ "$3" = "failure" ]; then
+            echo "Serie deja signalee (plus de trois echecs d'affilee) : pas de nouvelle alarme."; exit 0
+          fi
+          TITRE="Robot en échec"
+          corps=$(printf 'Le job de prévision a échoué trois fois de suite.\n\nDernier passage : %s\n' "$RUN_URL")
+          num=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "in:title \"$TITRE\"" \
+                  --json number,title --jq "map(select(.title == \"$TITRE\")) | .[0].number // empty")
+          if [ -n "$num" ]; then
+            printf '%s\n' "$corps" | gh issue comment "$num" --repo "$GITHUB_REPOSITORY" --body-file -
+          else
+            printf '%s\n' "$corps" | gh issue create --repo "$GITHUB_REPOSITORY" --title "$TITRE" --body-file -
+          fi

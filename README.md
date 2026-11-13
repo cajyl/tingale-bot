@@ -46,6 +46,13 @@ si possible, sa mesure.
 - `Test Bot` : déclenchement manuel, prévoit sur le tournoi de test `bot-testing-area`.
 - `Forecast on new AI tournament questions` : chaque heure (phase à budget borné ; 20 minutes ensuite), tournoi d'automne + MiniBench,
   en sautant les questions déjà prévues.
-- `Score du bot (lecture seule)` : manuel et le vendredi matin ; `score.py` lit via l'API (jeton) le
+- `Score du bot (lecture seule)` : manuel et chaque matin (06:05 UTC) ; `score.py` lit via l'API (jeton) le
   nombre de questions prévues par le bot et son rang au classement, sans rien publier. Résultat
-  dans le journal du job et dans le résumé du run.
+  dans le journal du job et dans le résumé du run. `alarmes.py` y lit aussi le solde de la clé
+  OpenRouter et les questions de Fall fermées sans prévision depuis le dernier relevé réussi ; s'il
+  y en a, ou si le solde passe sous 2 $, un second job (droit d'écrire des issues, aucun code tiers)
+  ouvre ou commente l'issue « Robot : à regarder ».
+- Alarme du job de prévision : après trois échecs d'affilée, le job `alarme_echec` ouvre ou commente
+  l'issue « Robot en échec » (une fois par série d'échecs).
+- `Diagnostic du bot (lecture seule)` : manuel ; questions tranchées (`diagnostic.py`) et dates des
+  sous-questions de Market Pulse (`marketpulse_dates.py`, identifiants et dates seulement).
