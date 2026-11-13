@@ -2,6 +2,26 @@ name: Test Bot
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publier les previsions sur la zone de test (bot-testing-area) ; par defaut non (--no-publish)"
+        type: boolean
+        required: false
+        default: false
+      max_questions:
+        description: "Nombre de questions au plus, types alternes (vide = toutes)"
+        required: false
+        default: ""
+      effort:
+        description: "Niveau de raisonnement du modele de prevision"
+        type: choice
+        options: [high, medium, low]
+        default: high
+      predictions:
+        description: "Previsions par question"
+        type: choice
+        options: ["5", "4", "3", "2", "1"]
+        default: "5"
 
 # Add concurrency group to prevent parallel runs
 concurrency:
@@ -13,6 +33,8 @@ concurrency:
 jobs:
   forecast_job:
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
+    # Borne du passage (13/11/2026) : chaque appel du modele est borne a 600 s, deux essais.
+    timeout-minutes: 60
     steps: # sets up the steps that will be run in order
       # setup repository with all necessary dependencies - keep as is
       - name: Check out repository
@@ -56,10 +78,24 @@ jobs:
       - name: Run bot
         if: steps.guard.outputs.skip != 'true'
         run: |
-          poetry run python main.py --mode test_questions
+          # Toujours la zone de test (--mode test_questions) ; sans publication sauf demande explicite.
+          ARGS="--mode test_questions --effort $EFFORT --predictions $PREDICTIONS"
+          if [ "$PUBLISH" != "true" ]; then ARGS="$ARGS --no-publish"; fi
+          if [ -n "$MAX_QUESTIONS" ]; then
+            case "$MAX_QUESTIONS" in
+              *[!0-9]*) echo "max_questions doit etre un nombre entier."; exit 1 ;;
+            esac
+            ARGS="$ARGS --max-questions $MAX_QUESTIONS"
+          fi
+          echo "Arguments : $ARGS"
+          poetry run python main.py $ARGS
         # this reads the environment variables from the github repository.
         # Store under Settings --> Secrets and variables --> Actions
         env:
+          PUBLISH: ${{ inputs.publish }}
+          MAX_QUESTIONS: ${{ inputs.max_questions }}
+          EFFORT: ${{ inputs.effort || 'high' }}
+          PREDICTIONS: ${{ inputs.predictions || '5' }}
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}

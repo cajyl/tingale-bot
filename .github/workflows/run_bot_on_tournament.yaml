@@ -31,6 +31,10 @@ concurrency:
 jobs:
   forecast_job:
     runs-on: ubuntu-latest # determines the machine that will run the job - keep as is
+    # Borne du passage (13/11/2026, raisonnement approfondi) : sans elle, GitHub laisse 6 heures a un
+    # passage bloque, qui retient le verrou de concurrence. Chaque appel du modele est borne a 600 s,
+    # deux essais ; les questions d'un passage sont traitees en parallele.
+    timeout-minutes: 60
     outputs:
       attempts_changed: ${{ steps.attempts.outputs.changed }}
     steps: # sets up the steps that will be run in order
