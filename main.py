@@ -1,9 +1,11 @@
 import argparse
 import asyncio
+import contextvars
 import logging
 import re
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
@@ -47,6 +49,93 @@ from forecasting_tools import (
 
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+##################################### MESURE DU COÛT #####################################
+# Mesure par question (pré-enregistrement E001 du 13/11/2026) : jetons d'entrée, de sortie (réflexion
+# comprise : chez Anthropic, output_tokens compte les jetons de réflexion), coût estimé et durée.
+# Le coût est recalculé ici à partir des jetons et des prix vérifiés le 13/11/2026 (compétence claude-api,
+# tarifs Anthropic en dollars par million de jetons), sans dépendre de la table de prix de litellm ;
+# pour les autres modèles (sonar via OpenRouter), on reprend le coût calculé par litellm, s'il en a un.
+PRIX_PAR_MILLION = {
+    # modèle : (entrée, sortie, seuil d'entrée au-delà duquel le second tarif s'applique, entrée, sortie)
+    "claude-opus-5-5": (4.00, 20.00, None, None, None),
+    "claude-haiku-5-5": (0.10, 0.50, 100_000, 0.50, 2.50),
+}
+
+_MESURE_QUESTION: contextvars.ContextVar[dict | None] = contextvars.ContextVar("mesure_question", default=None)
+MESURE_PASSAGE: list[dict] = []
+
+
+def _cout_estime(modele: str, entree: int, sortie: int, cout_litellm: float) -> tuple[float, str]:
+    nom = modele.split("/")[-1]
+    prix = PRIX_PAR_MILLION.get(nom)
+    if prix is None:
+        return float(cout_litellm or 0.0), "litellm"
+    p_in, p_out, seuil, p_in2, p_out2 = prix
+    if seuil is not None and entree > seuil:
+        p_in, p_out = p_in2, p_out2
+    return (entree * p_in + sortie * p_out) / 1_000_000, "tarif"
+
+
+class LlmMesure(GeneralLlm):
+    """GeneralLlm qui note les jetons et le coût de chaque appel facturé (réussi ou non) dans la question
+    en cours. Avec `repli_sur_reflexion=False`, une réponse sans texte final n'est jamais remplacée par le
+    contenu de la réflexion : l'appel échoue et le gabarit le retente, plutôt que de publier ou de faire
+    lire au parseur autre chose que la réponse finale."""
+
+    def __init__(self, *args, repli_sur_reflexion: bool = True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._repli_sur_reflexion = repli_sur_reflexion
+
+    async def _call_litellm(self, prompt):
+        debut = time.monotonic()
+        response = await super()._call_litellm(prompt)
+        acc = _MESURE_QUESTION.get()
+        if acc is not None:
+            usage = getattr(response, "usage", None)
+            entree = int(getattr(usage, "prompt_tokens", 0) or 0)
+            sortie = int(getattr(usage, "completion_tokens", 0) or 0)
+            cout_litellm = (getattr(response, "_hidden_params", None) or {}).get("response_cost") or 0.0
+            cout, source = _cout_estime(self.model, entree, sortie, cout_litellm)
+            fin = None
+            try:
+                fin = response.choices[0].finish_reason
+            except (AttributeError, IndexError):
+                pass
+            ligne = acc["modeles"].setdefault(
+                self.model, {"appels": 0, "entree": 0, "sortie": 0, "cout": 0.0, "source": source, "coupes": 0, "secondes": 0.0}
+            )
+            ligne["appels"] += 1
+            ligne["entree"] += entree
+            ligne["sortie"] += sortie
+            ligne["cout"] += cout
+            ligne["secondes"] += time.monotonic() - debut
+            if fin == "length":
+                ligne["coupes"] += 1
+        return response
+
+    def _answer_from_reasoning_content(self, message):
+        if self._repli_sur_reflexion:
+            return super()._answer_from_reasoning_content(message)
+        logger.warning(f"Modèle {self.model} : pas de texte final dans la réponse ; la réflexion n'est pas reprise comme réponse.")
+        return None
+
+
+def journaliser_total_mesure() -> None:
+    if not MESURE_PASSAGE:
+        logger.info("MESURE TOTAL questions=0")
+        return
+    n = len(MESURE_PASSAGE)
+    cout = sum(m["cout"] for m in MESURE_PASSAGE)
+    entree = sum(m["entree"] for m in MESURE_PASSAGE)
+    sortie = sum(m["sortie"] for m in MESURE_PASSAGE)
+    duree = sum(m["duree_s"] for m in MESURE_PASSAGE)
+    erreurs = sum(1 for m in MESURE_PASSAGE if m["statut"] != "ok")
+    logger.info(
+        f"MESURE TOTAL questions={n} erreurs={erreurs} entree={entree} sortie={sortie} "
+        f"cout_usd={cout:.4f} cout_moyen_usd={cout / n:.4f} duree_moyenne_s={duree / n:.0f}"
+    )
 
 
 class FallTemplateBot2026(ForecastBot):
@@ -179,6 +268,43 @@ class FallTemplateBot2026(ForecastBot):
             if not isinstance(r, BaseException) and getattr(r, "question", None) is not None:
                 self.attempts.pop(self._question_key(r.question), None)
         self._save_attempts()
+
+    async def _run_individual_question(self, question: MetaculusQuestion):
+        # Mesure par question : chaque appel de modèle de la question (recherche, 5 prévisions, parseur)
+        # s'ajoute à l'accumulateur porté par la variable de contexte, héritée par les tâches filles.
+        acc = {"modeles": {}}
+        jeton = _MESURE_QUESTION.set(acc)
+        debut = time.monotonic()
+        statut = "ok"
+        try:
+            return await super()._run_individual_question(question)
+        except BaseException:
+            statut = "erreur"
+            raise
+        finally:
+            _MESURE_QUESTION.reset(jeton)
+            duree = time.monotonic() - debut
+            modeles = acc["modeles"]
+            mesure = {
+                "url": question.page_url,
+                "type": type(question).__name__,
+                "statut": statut,
+                "entree": sum(m["entree"] for m in modeles.values()),
+                "sortie": sum(m["sortie"] for m in modeles.values()),
+                "cout": sum(m["cout"] for m in modeles.values()),
+                "duree_s": duree,
+            }
+            MESURE_PASSAGE.append(mesure)
+            detail = "; ".join(
+                f"{nom} appels={m['appels']} entree={m['entree']} sortie={m['sortie']} "
+                f"cout_usd={m['cout']:.4f} ({m['source']}) coupes={m['coupes']} secondes_cumulees={m['secondes']:.0f}"
+                for nom, m in modeles.items()
+            )
+            logger.info(
+                f"MESURE question={mesure['url']} type={mesure['type']} statut={statut} "
+                f"entree={mesure['entree']} sortie={mesure['sortie']} cout_usd={mesure['cout']:.4f} "
+                f"duree_s={duree:.0f} | {detail}"
+            )
 
     ##################################### RESEARCH #####################################
 
@@ -766,7 +892,31 @@ if __name__ == "__main__":
         default=None,
         help="Mode tournament : ne traiter que ce tournoi (identifiant ou slug, ex. market-pulse-26q4).",
     )
+    # Options d'essai (workflow « Test Bot », zone de test seulement) : le passage de production ne les
+    # passe pas et garde les valeurs par défaut.
+    parser.add_argument(
+        "--max-questions",
+        type=int,
+        default=None,
+        help="Mode test_questions : ne traiter que N questions, choisies en alternant les types.",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=["low", "medium", "high"],
+        default="high",
+        help="Niveau de raisonnement du modèle de prévision (défaut : high).",
+    )
+    parser.add_argument(
+        "--predictions",
+        type=int,
+        choices=[1, 2, 3, 4, 5],
+        default=5,
+        help="Prévisions par question (défaut : 5).",
+    )
     args = parser.parse_args()
+    if args.mode != "test_questions":
+        if args.max_questions is not None or args.effort != "high" or args.predictions != 5:
+            parser.error("--max-questions, --effort et --predictions sont réservées au mode test_questions.")
     run_mode: Literal["tournament", "metaculus_cup", "test_questions"] = args.mode
 
     check_environment(strict=True)
@@ -783,21 +933,35 @@ if __name__ == "__main__":
     # premier test). Toute évolution de ce choix se fait une variable à la fois, avec sa mesure (E001).
     use_claude = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
     if use_claude:
+        # 13/11/2026, E001 (pré-enregistrement du 13/11) : raisonnement approfondi « high » sur Opus 5.5.
+        # Vérifié dans la compétence claude-api : sur claude-opus-5-5, la réflexion adaptative est toujours
+        # active (effort par défaut « medium ») ; la profondeur se règle par output_config.effort ;
+        # temperature est refusée (400, le gabarit la retirait après un premier refus) ; la réflexion compte
+        # dans max_tokens. litellm 1.80.10 traduit reasoning_effort en thinking.budget_tokens, refusé (400)
+        # par ce modèle : on passe donc les paramètres bruts de l'API (thinking, output_config), que litellm
+        # transmet tels quels. Avant, max_tokens valait 4096 par défaut (litellm), réflexion comprise.
+        # Retour arrière en une ligne : remplacer l'appel ci-dessous par
+        #   "default": GeneralLlm(model="anthropic/claude-opus-5-5", temperature=0.3, timeout=120, allowed_tries=2),
         llms = {
-            "default": GeneralLlm(
+            "default": LlmMesure(
                 model="anthropic/claude-opus-5-5",
-                temperature=0.3,
-                timeout=120,
+                thinking={"type": "adaptive"},
+                output_config={"effort": args.effort},
+                max_tokens=32000,
+                timeout=600,
                 allowed_tries=2,
+                repli_sur_reflexion=False,
             ),
-            "summarizer": "anthropic/claude-haiku-5-5",
-            "researcher": GeneralLlm(
+            # Résumé et parseur inchangés (mêmes paramètres que la chaîne de caractères d'avant, que le
+            # gabarit convertissait en GeneralLlm(model=...)) ; seule la mesure des jetons s'ajoute.
+            "summarizer": LlmMesure(model="anthropic/claude-haiku-5-5"),
+            "researcher": LlmMesure(
                 model="openrouter/perplexity/sonar",
                 temperature=0.1,
                 timeout=90,
                 allowed_tries=2,
             ),
-            "parser": "anthropic/claude-haiku-5-5",
+            "parser": LlmMesure(model="anthropic/claude-haiku-5-5"),
         }
     else:
         llms = {
@@ -816,10 +980,14 @@ if __name__ == "__main__":
             ),
             "parser": "openrouter/openai/gpt-4.1-mini",
         }
-    logger.info("Modèles : " + ("Claude (Opus 5.5 / Haiku 5.5) + sonar" if use_claude else "OpenRouter (gpt-5-mini / gpt-4.1-mini / sonar)"))
+    logger.info(
+        "Modèles : "
+        + (f"Claude (Opus 5.5 effort {args.effort} / Haiku 5.5) + sonar" if use_claude else "OpenRouter (gpt-5-mini / gpt-4.1-mini / sonar)")
+        + f", {args.predictions} prévisions par question"
+    )
     template_bot = FallTemplateBot2026(
         research_reports_per_question=1,
-        predictions_per_research_report=5,
+        predictions_per_research_report=args.predictions,
         use_research_summary_to_forecast=False,
         publish_reports_to_metaculus=publish_to_metaculus,
         folder_to_save_reports_to=None,
@@ -889,12 +1057,35 @@ if __name__ == "__main__":
         # the recommended target for smoke-testing your bot.
         # https://www.metaculus.com/tournament/bot-testing-area/
         template_bot.skip_previously_forecasted_questions = False
-        forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                "bot-testing-area", return_exceptions=True
+        if args.max_questions is None:
+            forecast_reports = asyncio.run(
+                template_bot.forecast_on_tournament(
+                    "bot-testing-area", return_exceptions=True
+                )
             )
-        )
+        else:
+            # Essai limité : N questions en alternant les types (binaire, numérique, choix multiple, date,
+            # puis conditionnelle, quatre fois plus coûteuse), pour mesurer chaque type à moindre frais.
+            toutes = client.get_all_open_questions_from_tournament("bot-testing-area")
+            ordre = ["BinaryQuestion", "NumericQuestion", "MultipleChoiceQuestion", "DateQuestion", "ConditionalQuestion"]
+            par_type: dict[str, list] = {}
+            for q in toutes:
+                par_type.setdefault(type(q).__name__, []).append(q)
+            types = [t for t in ordre if t in par_type] + sorted(t for t in par_type if t not in ordre)
+            choisies: list = []
+            while len(choisies) < args.max_questions and any(par_type[t] for t in types):
+                for t in types:
+                    if par_type[t] and len(choisies) < args.max_questions:
+                        choisies.append(par_type[t].pop(0))
+            logger.info(
+                f"Essai limité : {len(choisies)} questions sur {len(toutes)} : "
+                + ", ".join(f"{type(q).__name__} {q.page_url}" for q in choisies)
+            )
+            forecast_reports = asyncio.run(
+                template_bot.forecast_questions(choisies, return_exceptions=True)
+            )
 
+    journaliser_total_mesure()
     template_bot.forget_successes(forecast_reports)
     template_bot.log_report_summary(forecast_reports)
     print_run_summary_banner(
