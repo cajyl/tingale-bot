@@ -45,7 +45,10 @@ si possible, sa mesure.
 
 - `Test Bot` : déclenchement manuel, prévoit sur le tournoi de test `bot-testing-area`.
 - `Forecast on new AI tournament questions` : chaque heure (phase à budget borné ; 20 minutes ensuite), tournoi d'automne + MiniBench,
-  en sautant les questions déjà prévues.
+  en sautant les questions déjà prévues. Sur Market Pulse seulement (`MARKET_PULSE_ENABLED=1`), le passage
+  refait ensuite une fois la prévision de chaque sous-question dans les 24 heures qui précèdent son instant de
+  notation (`spot_scoring_time`, à défaut la clôture), six au plus par passage (`marketpulse_veille.py`,
+  tests : `python3 -m unittest test_marketpulse_veille`).
 - `Score du bot (lecture seule)` : manuel et chaque matin (06:05 UTC) ; `score.py` lit via l'API (jeton) le
   nombre de questions prévues par le bot et son rang au classement, sans rien publier. Résultat
   dans le journal du job et dans le résumé du run. `alarmes.py` y lit aussi le solde de la clé

@@ -22,6 +22,15 @@ from bot_helpers import (
 
 silence_noisy_dependencies()
 
+# Market Pulse : prévision refaite la veille de l'instant de notation (pré-enregistrement E001 du 13/11/2026).
+from marketpulse_veille import (
+    MARKET_PULSE_ID,
+    choisir_veille,
+    dates_de_question,
+    fmt as fmt_date,
+    instant_de_notation,
+)
+
 from forecasting_tools import (
     AskNewsSearcher,
     BinaryQuestion,
@@ -268,6 +277,62 @@ class FallTemplateBot2026(ForecastBot):
             if not isinstance(r, BaseException) and getattr(r, "question", None) is not None:
                 self.attempts.pop(self._question_key(r.question), None)
         self._save_attempts()
+
+    async def forecast_on_tournament_avec_veille(self, tournament_id: int | str) -> list:
+        """Market Pulse seulement : le passage normal, à l'identique de `forecast_on_tournament` de
+        forecasting-tools 0.3.4 (lecture des questions ouvertes puis `forecast_questions`, qui saute les
+        sous-questions déjà prévues), puis la prévision refaite la veille de la notation."""
+        questions = self.metaculus_client.get_all_open_questions_from_tournament(tournament_id)
+        reports = list(await self.forecast_questions(questions, return_exceptions=True))
+        reports += await self.reprevoir_veille_de_notation(questions)
+        return reports
+
+    async def reprevoir_veille_de_notation(self, questions: list, maintenant: datetime | None = None) -> list:
+        """Refait, avec la même chaîne (mêmes modèles, même publication), les sous-questions ouvertes déjà
+        prévues dont l'instant de notation tombe dans les 24 heures et dont la dernière prévision est
+        antérieure à (notation moins 24 heures) ; six au plus, choisies par `choisir_veille`.
+
+        Les dates viennent de la lecture faite avant le passage normal : celui-ci ne touche pas aux
+        sous-questions déjà prévues, leurs dernières prévisions n'ont donc pas bougé. L'heure courante est
+        prise après le passage normal, pour ne jamais refaire une sous-question notée entre-temps.
+        Compteur de tentatives : chaque essai passe par `run_research` (compté) et `forget_successes`
+        (succès retirés) comme le reste ; un échec répété est arrêté par le garde-fou de deux tentatives,
+        et un succès rend la condition fausse (dernière prévision postérieure à notation moins 24 heures).
+        Journal public : identifiants et dates seulement, jamais la valeur d'une prévision."""
+        maintenant = maintenant or datetime.now(timezone.utc)
+        deja_prevues = [
+            q for q in questions
+            if q.already_forecasted and getattr(q.state, "value", q.state) == "open"
+        ]
+        choisies = choisir_veille([dates_de_question(q) for q in deja_prevues], maintenant)
+        logger.info(
+            f"Market Pulse, veille de la notation : {len(choisies)} sous-question(s) à refaire "
+            f"sur {len(deja_prevues)} ouverte(s) déjà prévue(s) (heure courante {fmt_date(maintenant)})"
+        )
+        for d in choisies:
+            source = "spot" if d.get("spot_scoring_time") else "cloture"
+            logger.info(
+                f"VEILLE refaite post={d['id_post']} question={d['id_question']} "
+                f"notation={fmt_date(instant_de_notation(d))} ({source}) cloture={fmt_date(d['scheduled_close_time'])} "
+                f"derniere_prevision={fmt_date(d['derniere_prevision'])}"
+            )
+        if not choisies:
+            return []
+        precedent = self.skip_previously_forecasted_questions
+        # Seul moyen de forcer une question déjà prévue dans forecasting-tools 0.3.4 : le filtre
+        # `already_forecasted` de ForecastBot.forecast_questions dépend de cette option. Elle n'est levée
+        # que pour cet appel, puis remise à sa valeur.
+        self.skip_previously_forecasted_questions = False
+        try:
+            reports = list(await self.forecast_questions([d["question"] for d in choisies], return_exceptions=True))
+        finally:
+            self.skip_previously_forecasted_questions = precedent
+        for r in reports:
+            if isinstance(r, BaseException):
+                logger.warning(f"VEILLE échec : {type(r).__name__}")
+            else:
+                logger.info(f"VEILLE terminée post={r.question.id_of_post} question={r.question.id_of_question}")
+        return reports
 
     async def _run_individual_question(self, question: MetaculusQuestion):
         # Mesure par question : chaque appel de modèle de la question (recherche, 5 prévisions, parseur)
@@ -1038,6 +1103,10 @@ if __name__ == "__main__":
         forecast_reports = []
         for label, tournament_id in targets:
             logger.info(f"Tournoi : {label} ({tournament_id})")
+            if str(tournament_id) == MARKET_PULSE_ID:
+                # Market Pulse seulement : passage normal, puis prévision refaite la veille de la notation.
+                forecast_reports += asyncio.run(template_bot.forecast_on_tournament_avec_veille(tournament_id))
+                continue
             forecast_reports += asyncio.run(
                 template_bot.forecast_on_tournament(tournament_id, return_exceptions=True)
             )
