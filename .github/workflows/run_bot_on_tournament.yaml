@@ -89,6 +89,8 @@ jobs:
           EXTRA_ARGS: ${{ inputs.extra_args }}
           MARKET_PULSE_ENABLED: ${{ vars.MARKET_PULSE_ENABLED }}
           MINIBENCH_ENABLED: ${{ vars.MINIBENCH_ENABLED }}
+          # AskNews sur Fall FutureEval seulement (pre-enregistrement E001 du 17/11/2026) : eteint sauf "1".
+          ASKNEWS_ENABLED: ${{ vars.ASKNEWS_ENABLED }}
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
@@ -97,11 +99,15 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
-      - name: Compteur de tentatives modifie ?
+          ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}
+      # Le dossier state/ porte deux compteurs : attempts.json (tentatives par question) et asknews.json
+      # (appels AskNews du mois civil, nouveau fichier au premier appel). L'un ou l'autre modifie, ou cree,
+      # suffit a enregistrer le dossier.
+      - name: Compteurs de state/ modifies ?
         id: attempts
         if: always() && steps.guard.outputs.skip != 'true'
         run: |
-          if [ -n "$(git status --porcelain state/attempts.json)" ]; then
+          if [ -n "$(git status --porcelain state/)" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -111,7 +117,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: attempts
-          path: state/attempts.json
+          # Deux chemins nommes : la racine de l'artefact est leur ancetre commun (state/), regle ecrite dans
+          # la documentation d'upload-artifact ; attempts.json reste donc a la racine, comme avant.
+          path: |
+            state/attempts.json
+            state/asknews.json
           retention-days: 3
 
   save_attempts:
@@ -126,12 +136,12 @@ jobs:
         with:
           name: attempts
           path: state
-      - name: Commiter le compteur de tentatives
+      - name: Commiter les compteurs (tentatives, appels AskNews)
         run: |
-          if [ -n "$(git status --porcelain state/attempts.json)" ]; then
+          if [ -n "$(git status --porcelain state/)" ]; then
             git config user.name "tingale-bot"
             git config user.email "tingale-bot@users.noreply.github.com"
-            git add state/attempts.json
+            git add state/
             git commit -m "Garde-fou : tentatives par question ($(date -u +%Y-%m-%dT%H:%MZ))"
             git pull --rebase origin "${GITHUB_REF_NAME}"
             git push

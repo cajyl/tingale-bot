@@ -33,6 +33,10 @@ from marketpulse_veille import (
     instant_de_notation,
 )
 
+# AskNews sur Fall FutureEval (pré-enregistrement E001 du 17/11/2026), éteint par défaut : logique dans
+# asknews_fall.py (bibliothèque standard seulement, testée par test_asknews_fall.py).
+from asknews_fall import AskNewsFall, ZONE_DE_TEST, assembler as assembler_recherche, tournois_autorises
+
 from forecasting_tools import (
     AskNewsSearcher,
     BinaryQuestion,
@@ -242,6 +246,10 @@ class FallTemplateBot2026(ForecastBot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.attempts = self._load_attempts()
+        # AskNews : branché après la création du client Metaculus (identifiant de Fall) ; None = éteint.
+        # `tournoi_en_cours` est posé par la boucle des tournois avant chaque passage (voir plus bas).
+        self.asknews: AskNewsFall | None = None
+        self.tournoi_en_cours: str | None = None
 
     @classmethod
     def _load_attempts(cls) -> dict:
@@ -428,6 +436,21 @@ class FallTemplateBot2026(ForecastBot):
                 research = ""
             else:
                 research = await self.get_llm("researcher", "llm").invoke(prompt)
+            # AskNews (Fall FutureEval seulement, interrupteur ASKNEWS_ENABLED) : appelé après sonar, sous le
+            # même verrou de concurrence, donc un appel à la fois ; ses actualités passent en tête, la synthèse
+            # de sonar suit inchangée. Toute erreur donne sonar seul : rien ne remonte à la question, et le
+            # compteur de tentatives, déjà incrémenté plus haut, ne change pas de comportement.
+            if self.asknews is not None and self.asknews.concerne(self.tournoi_en_cours):
+                try:
+                    bloc = await self.asknews.actualites(question.page_url, question.question_text)
+                except Exception as exc:  # ceinture : actualites() ne lève déjà rien d'ordinaire
+                    logger.warning(f"ASKNEWS question={question.page_url} statut=repli erreur={type(exc).__name__}")
+                    bloc = None
+                # Journal public (dépôt public) : la synthèse de sonar comme avant ; du bloc AskNews, seulement
+                # la taille. Le texte des articles ne va que dans le rapport remis au modèle de prévision.
+                marque = f"[AskNews : {len(bloc)} caractères en tête du rapport, non journalisés]\n" if bloc is not None else ""
+                logger.info(f"Found Research for URL {question.page_url}:\n{marque}{research}")
+                return assembler_recherche(bloc, research)
             logger.info(f"Found Research for URL {question.page_url}:\n{research}")
             return research
 
@@ -1092,6 +1115,14 @@ if __name__ == "__main__":
     # exceptions, since return_exceptions=True) which then flows into the
     # summary printers below.
     client = MetaculusClient()
+    # AskNews (pré-enregistrement E001 du 17/11/2026) : éteint sauf ASKNEWS_ENABLED=1 et identifiants présents ;
+    # Fall FutureEval seulement en production ; zone de test seulement pour un essai sans publication de deux
+    # questions au plus. Une ligne d'état au démarrage, quel que soit l'état.
+    tournois_asknews, raison_asknews = tournois_autorises(
+        run_mode, client.CURRENT_AI_COMPETITION_ID, publish_to_metaculus, args.max_questions
+    )
+    template_bot.asknews = AskNewsFall(os.environ, tournois_asknews, raison_asknews)
+    logger.info(template_bot.asknews.etat_au_demarrage())
     if run_mode == "tournament":
         targets = [("Fall FutureEval 2026", client.CURRENT_AI_COMPETITION_ID)]
         # MiniBench (1 000 $ par cycle) retiré le 06/11/2026 : règle du 05/11 du dépôt augustin-gale, sans
@@ -1121,6 +1152,9 @@ if __name__ == "__main__":
         forecast_reports = []
         for label, tournament_id in targets:
             logger.info(f"Tournoi : {label} ({tournament_id})")
+            # Repère du tournoi pour AskNews : les tournois passent l'un après l'autre (un asyncio.run chacun),
+            # et Market Pulse, reprise de la veille comprise, garde son propre identifiant.
+            template_bot.tournoi_en_cours = str(tournament_id)
             if str(tournament_id) == MARKET_PULSE_ID:
                 # Market Pulse seulement : passage normal, puis prévision refaite la veille de la notation.
                 forecast_reports += asyncio.run(template_bot.forecast_on_tournament_avec_veille(tournament_id))
@@ -1144,6 +1178,7 @@ if __name__ == "__main__":
         # the recommended target for smoke-testing your bot.
         # https://www.metaculus.com/tournament/bot-testing-area/
         template_bot.skip_previously_forecasted_questions = False
+        template_bot.tournoi_en_cours = ZONE_DE_TEST
         if args.max_questions is None:
             forecast_reports = asyncio.run(
                 template_bot.forecast_on_tournament(

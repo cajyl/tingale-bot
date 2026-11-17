@@ -22,6 +22,11 @@ on:
         type: choice
         options: ["5", "4", "3", "2", "1"]
         default: "5"
+      asknews:
+        description: "Essai AskNews pour ce seul passage (sans publication, max_questions 1 ou 2 obligatoires)"
+        type: boolean
+        required: false
+        default: false
 
 # Add concurrency group to prevent parallel runs
 concurrency:
@@ -87,6 +92,17 @@ jobs:
             esac
             ARGS="$ARGS --max-questions $MAX_QUESTIONS"
           fi
+          # Essai AskNews (pre-enregistrement E001 du 17/11/2026) : sans publication et deux appels au plus.
+          # main.py refuse aussi AskNews sur la zone de test hors de ces conditions. La variable de production
+          # vars.ASKNEWS_ENABLED n'est pas lue ici.
+          if [ "$ASKNEWS" = "true" ]; then
+            case "$PUBLISH/$MAX_QUESTIONS" in
+              false/1|false/2|/1|/2) ;;
+              *) echo "Essai AskNews : sans publication et avec max_questions 1 ou 2 seulement."; exit 1 ;;
+            esac
+            export ASKNEWS_ENABLED=1
+          fi
+          echo "AskNews pour ce passage : ${ASKNEWS_ENABLED:-eteint}"
           echo "Arguments : $ARGS"
           poetry run python main.py $ARGS
         # this reads the environment variables from the github repository.
@@ -96,6 +112,7 @@ jobs:
           MAX_QUESTIONS: ${{ inputs.max_questions }}
           EFFORT: ${{ inputs.effort || 'high' }}
           PREDICTIONS: ${{ inputs.predictions || '5' }}
+          ASKNEWS: ${{ inputs.asknews }}
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }} # replace this with the name of the variable under which you stored your own Metaculus token
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
@@ -104,3 +121,4 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ASKNEWS_CLIENT_ID: ${{ secrets.ASKNEWS_CLIENT_ID }}
           ASKNEWS_SECRET: ${{ secrets.ASKNEWS_SECRET }}
+          ASKNEWS_API_KEY: ${{ secrets.ASKNEWS_API_KEY }}
