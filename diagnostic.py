@@ -23,7 +23,22 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from score import api, clean  # noqa: E402
 
-DEFAULT_TOURNAMENTS = "33121:Fall,33135:MiniBench,market-pulse-26q4:Market Pulse"
+# Clé du tournoi passée telle quelle à /posts/?tournaments= (identifiant ou nom court), comme dans
+# score.py : « minibench » y désigne le cycle MiniBench en cours (projet 33169 au 20/11), 33135 le
+# cycle du 02/11, terminé. Un libellé peut contenir espaces et parenthèses, pas de virgule.
+FALL = "33121"
+DEFAULT_TOURNAMENTS = (f"{FALL}:Fall,minibench:MiniBench (cycle en cours),"
+                       "33135:MiniBench (cycle du 02/11),market-pulse-26q4:Market Pulse")
+
+
+def tournaments(spec):
+    """Liste des couples (clé, libellé) lus dans « clé:libellé,clé:libellé »."""
+    pairs = []
+    for item in spec.split(","):
+        key, _, label = item.strip().partition(":")
+        if key:
+            pairs.append((key.strip(), label.strip() or key.strip()))
+    return pairs
 
 
 def resolved_posts(token, tournament, my_id):
@@ -70,16 +85,28 @@ def summarize(post, q):
     return row
 
 
-# Modèle qui a répondu, d'après l'heure de la prévision : Claude Opus 5.5 depuis le 25/10 13:39 UTC
-# (commit f9c27e7), gpt-5-mini avant. Pas besoin de lire les commentaires privés du bot.
+# Réglage qui a répondu, d'après l'heure de début de la dernière prévision (secondes Unix, UTC) et le
+# tournoi. Pas besoin de lire les commentaires privés du bot. Chaque bascule vaut à l'instant donné.
+# Passage de gpt-5-mini à Claude Opus 5.5, effort « medium » (commit f9c27e7).
 SWITCH_TO_CLAUDE = datetime(2026, 10, 25, 13, 39, tzinfo=timezone.utc).timestamp()
+# Passage de l'effort de raisonnement de Claude de « medium » à « high », tous tournois.
+SWITCH_TO_HIGH = datetime(2026, 11, 13, 11, 2, tzinfo=timezone.utc).timestamp()
+# Mise en service d'AskNews sur Fall seulement (ASKNEWS_ENABLED=1) ; les autres tournois restent sans.
+SWITCH_TO_ASKNEWS_FALL = datetime(2026, 11, 17, 18, 3, tzinfo=timezone.utc).timestamp()
 
 
-def model_of(q):
+def model_of(q, tournament):
+    """Libellé du réglage pour la question q du tournoi de clé `tournament`."""
     start = latest(q.get("my_forecasts")).get("start_time")
-    if not isinstance(start, (int, float)):
+    if not isinstance(start, (int, float)) or isinstance(start, bool):
         return "?"
-    return "claude-opus-5-5" if start >= SWITCH_TO_CLAUDE else "gpt-5-mini"
+    if start < SWITCH_TO_CLAUDE:
+        return "gpt-5-mini"
+    if start < SWITCH_TO_HIGH:
+        return "claude-opus-5-5 medium"
+    if str(tournament) == FALL and start >= SWITCH_TO_ASKNEWS_FALL:
+        return "claude-opus-5-5 high + AskNews"
+    return "claude-opus-5-5 high"
 
 
 def main():
@@ -90,8 +117,7 @@ def main():
     me = api("/users/me/", token=token)
     my_id = me["id"]
     rows, shown_keys = [], False
-    for item in os.environ.get("TOURNAMENTS", DEFAULT_TOURNAMENTS).split(","):
-        key, _, label = item.strip().partition(":")
+    for key, label in tournaments(os.environ.get("TOURNAMENTS", DEFAULT_TOURNAMENTS)):
         try:
             posts = resolved_posts(token, key, my_id)
         except urllib.error.HTTPError as e:
@@ -111,7 +137,7 @@ def main():
                     shown_keys = True
                 row = summarize(post, q)
                 row["tournament"] = label
-                row["model"] = model_of(q)
+                row["model"] = model_of(q, key)
                 rows.append(row)
 
     def pts(r):
