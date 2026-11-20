@@ -155,6 +155,10 @@ class TestPlace(unittest.TestCase):
 
 
 class TestEchantillon(unittest.TestCase):
+    def test_post_exclu_en_high_affiche_comme_exclu(self):
+        rows = r1_rows([item(46016, qn(), model="claude-opus-5-5 high"), item(7001, qn(), model="claude-opus-5-5 high")])
+        self.assertEqual([(r["post"], r["role"]) for r in rows], [(46016, "exclu")])
+
     def test_high_jamais_affiche(self):
         items = [item(7001, qn(), model="claude-opus-5-5 high"),
                  item(7002, qn(), model="claude-opus-5-5 high + AskNews"), item(7003, qn())]

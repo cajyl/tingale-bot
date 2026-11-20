@@ -208,7 +208,15 @@ def r1_rows(items):
     for it in items:
         q = it.get("q") or {}
         model = it.get("model")
-        if model in R1_RESERVED_MODELS or q.get("type") not in R1_TYPES:
+        if q.get("type") not in R1_TYPES:
+            continue
+        try:
+            concu = int(it.get("post")) in R1_EXCLUDED_POSTS
+        except (TypeError, ValueError):
+            concu = False
+        # Les posts exclus du jugement (dont 46016, refait en « high ») restent affichés : ils servent de
+        # contrôle de l'instrument. Tout autre réglage réservé à l'étape 2 n'est ni lu ni affiché.
+        if model in R1_RESERVED_MODELS and not concu:
             continue
         lower, upper = bound_flag(q, "open_lower_bound"), bound_flag(q, "open_upper_bound")
         cdf = latest(q.get("my_forecasts")).get("forecast_values")
