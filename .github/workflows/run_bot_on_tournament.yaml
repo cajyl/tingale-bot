@@ -63,8 +63,21 @@ jobs:
         if: steps.guard.outputs.skip != 'true'
         with:
           python-version: "3.11"
+      # Deux essais (20/11/2026) : l'installeur de Poetry telecharge sur le reseau a chaque passage et la
+      # connexion du runner a casse deux fois en cinq jours (15/11 et 20/11, erreur SSL), ce qui perdait le
+      # passage entier. Le premier essai ne fait plus echouer le job ; le second ne part que si le premier
+      # a echoue, et son echec arrete le passage comme avant. Meme action, memes reglages, meme version.
       - name: Install poetry
+        id: poetry_essai_1
         if: steps.guard.outputs.skip != 'true'
+        continue-on-error: true
+        uses: snok/install-poetry@v1
+        with:
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+          installer-parallel: true
+      - name: Install poetry (second essai)
+        if: steps.guard.outputs.skip != 'true' && steps.poetry_essai_1.outcome == 'failure'
         uses: snok/install-poetry@v1
         with:
           virtualenvs-create: true
